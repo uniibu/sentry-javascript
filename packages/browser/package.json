@@ -39,7 +39,7 @@
     "karma-rollup-preprocessor": "^7.0.0",
     "karma-sinon": "^1.0.5",
     "karma-typescript": "^4.0.0",
-    "karma-typescript-es6-transform": "^4.0.0",
+    "karma-typescript-es6-transform": "^5.0.3",
     "node-fetch": "^2.6.0",
     "npm-run-all": "^4.1.2",
     "prettier": "1.17.0",
