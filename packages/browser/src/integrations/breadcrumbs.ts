@@ -14,7 +14,7 @@ import {
 /** JSDoc */
 interface BreadcrumbsOptions {
   console: boolean;
-  dom: boolean;
+  dom: boolean | { serializeAttribute: string | string[] };
   fetch: boolean;
   history: boolean;
   sentry: boolean;
@@ -162,12 +162,17 @@ export class Breadcrumbs implements Integration {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _domBreadcrumb(handlerData: { [key: string]: any }): void {
     let target;
+    let keyAttrs = typeof this._options.dom === 'object' ? this._options.dom.serializeAttribute : undefined;
+
+    if (typeof keyAttrs === 'string') {
+      keyAttrs = [keyAttrs];
+    }
 
     // Accessing event.target can throw (see getsentry/raven-js#838, #768)
     try {
       target = handlerData.event.target
-        ? htmlTreeAsString(handlerData.event.target as Node)
-        : htmlTreeAsString((handlerData.event as unknown) as Node);
+        ? htmlTreeAsString(handlerData.event.target as Node, keyAttrs)
+        : htmlTreeAsString((handlerData.event as unknown) as Node, keyAttrs);
     } catch (e) {
       target = '<unknown>';
     }

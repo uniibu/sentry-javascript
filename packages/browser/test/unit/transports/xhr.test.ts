@@ -6,6 +6,7 @@ import { Event, Status, Transports } from '../../../src';
 const testDsn = 'https://123@sentry.io/42';
 const storeUrl = 'https://sentry.io/api/42/store/?sentry_key=123&sentry_version=7';
 const envelopeUrl = 'https://sentry.io/api/42/envelope/?sentry_key=123&sentry_version=7';
+const tunnel = 'https://hello.com/world';
 const eventPayload: Event = {
   event_id: '1337',
 };
@@ -44,6 +45,15 @@ describe('XHRTransport', () => {
       expect(server.requests.length).equal(1);
       expect(request.method).equal('POST');
       expect(JSON.parse(request.requestBody)).deep.equal(eventPayload);
+    });
+
+    it('sends a request to tunnel if configured', async () => {
+      transport = new Transports.XHRTransport({ dsn: testDsn, tunnel });
+      server.respondWith('POST', tunnel, [200, {}, '']);
+
+      await transport.sendEvent(eventPayload);
+
+      expect(server.requests[0].url).equal(tunnel);
     });
 
     it('rejects with non-200 status code', async () => {
@@ -117,7 +127,9 @@ describe('XHRTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for event requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(server.requests.length).equal(1);
         }
 
@@ -180,7 +192,9 @@ describe('XHRTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for event requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(server.requests.length).equal(2);
         }
 
@@ -246,7 +260,9 @@ describe('XHRTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for event requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(server.requests.length).equal(1);
         }
 
@@ -255,7 +271,9 @@ describe('XHRTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for transaction requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(server.requests.length).equal(1);
         }
 
@@ -322,7 +340,9 @@ describe('XHRTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for event requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(server.requests.length).equal(1);
         }
 
@@ -331,7 +351,9 @@ describe('XHRTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for transaction requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(server.requests.length).equal(1);
         }
 
@@ -383,7 +405,9 @@ describe('XHRTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for event requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(server.requests.length).equal(1);
         }
 

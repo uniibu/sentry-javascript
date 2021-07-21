@@ -10,6 +10,7 @@ import {
   Extra,
   Extras,
   Primitive,
+  RequestSession,
   Scope as ScopeInterface,
   ScopeContext,
   Severity,
@@ -20,6 +21,12 @@ import {
 import { dateTimestampInSeconds, getGlobalObject, isPlainObject, isThenable, SyncPromise } from '@sentry/utils';
 
 import { Session } from './session';
+
+/**
+ * Absolute maximum number of breadcrumbs added to an event.
+ * The `maxBreadcrumbs` option cannot be higher than this value.
+ */
+const MAX_BREADCRUMBS = 100;
 
 /**
  * Holds additional event information. {@link Scope.applyToEvent} will be
@@ -65,6 +72,9 @@ export class Scope implements ScopeInterface {
   /** Session */
   protected _session?: Session;
 
+  /** Request Mode Session Status */
+  protected _requestSession?: RequestSession;
+
   /**
    * Inherit values from the parent scope.
    * @param scope to clone.
@@ -83,6 +93,7 @@ export class Scope implements ScopeInterface {
       newScope._transactionName = scope._transactionName;
       newScope._fingerprint = scope._fingerprint;
       newScope._eventProcessors = [...scope._eventProcessors];
+      newScope._requestSession = scope._requestSession;
     }
     return newScope;
   }
@@ -120,6 +131,21 @@ export class Scope implements ScopeInterface {
    */
   public getUser(): User | undefined {
     return this._user;
+  }
+
+  /**
+   * @inheritDoc
+   */
+  public getRequestSession(): RequestSession | undefined {
+    return this._requestSession;
+  }
+
+  /**
+   * @inheritDoc
+   */
+  public setRequestSession(requestSession?: RequestSession): this {
+    this._requestSession = requestSession;
+    return this;
   }
 
   /**
@@ -297,6 +323,9 @@ export class Scope implements ScopeInterface {
       if (captureContext._fingerprint) {
         this._fingerprint = captureContext._fingerprint;
       }
+      if (captureContext._requestSession) {
+        this._requestSession = captureContext._requestSession;
+      }
     } else if (isPlainObject(captureContext)) {
       // eslint-disable-next-line no-param-reassign
       captureContext = captureContext as ScopeContext;
@@ -311,6 +340,9 @@ export class Scope implements ScopeInterface {
       }
       if (captureContext.fingerprint) {
         this._fingerprint = captureContext.fingerprint;
+      }
+      if (captureContext.requestSession) {
+        this._requestSession = captureContext.requestSession;
       }
     }
 
@@ -329,6 +361,7 @@ export class Scope implements ScopeInterface {
     this._level = undefined;
     this._transactionName = undefined;
     this._fingerprint = undefined;
+    this._requestSession = undefined;
     this._span = undefined;
     this._session = undefined;
     this._notifyScopeListeners();
@@ -339,16 +372,20 @@ export class Scope implements ScopeInterface {
    * @inheritDoc
    */
   public addBreadcrumb(breadcrumb: Breadcrumb, maxBreadcrumbs?: number): this {
+    const maxCrumbs = typeof maxBreadcrumbs === 'number' ? Math.min(maxBreadcrumbs, MAX_BREADCRUMBS) : MAX_BREADCRUMBS;
+
+    // No data has been changed, so don't notify scope listeners
+    if (maxCrumbs <= 0) {
+      return this;
+    }
+
     const mergedBreadcrumb = {
       timestamp: dateTimestampInSeconds(),
       ...breadcrumb,
     };
-
-    this._breadcrumbs =
-      maxBreadcrumbs !== undefined && maxBreadcrumbs >= 0
-        ? [...this._breadcrumbs, mergedBreadcrumb].slice(-maxBreadcrumbs)
-        : [...this._breadcrumbs, mergedBreadcrumb];
+    this._breadcrumbs = [...this._breadcrumbs, mergedBreadcrumb].slice(-maxCrumbs);
     this._notifyScopeListeners();
+
     return this;
   }
 
@@ -423,11 +460,11 @@ export class Scope implements ScopeInterface {
       } else {
         const result = processor({ ...event }, hint) as Event | null;
         if (isThenable(result)) {
-          (result as PromiseLike<Event | null>)
+          void (result as PromiseLike<Event | null>)
             .then(final => this._notifyEventProcessors(processors, final, hint, index + 1).then(resolve))
             .then(null, reject);
         } else {
-          this._notifyEventProcessors(processors, result, hint, index + 1)
+          void this._notifyEventProcessors(processors, result, hint, index + 1)
             .then(resolve)
             .then(null, reject);
         }

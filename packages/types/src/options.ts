@@ -2,6 +2,7 @@ import { Breadcrumb, BreadcrumbHint } from './breadcrumb';
 import { Event, EventHint } from './event';
 import { Integration } from './integration';
 import { LogLevel } from './loglevel';
+import { CaptureContext } from './scope';
 import { SdkMetadata } from './sdkmetadata';
 import { SamplingContext } from './transaction';
 import { Transport, TransportClass, TransportOptions } from './transport';
@@ -55,6 +56,13 @@ export interface Options {
    * Options for the default transport that the SDK uses.
    */
   transportOptions?: TransportOptions;
+
+  /**
+   * A URL to an envelope tunnel endpoint. An envelope tunnel is an HTTP endpoint
+   * that accepts Sentry envelopes for forwarding. This can be used to force data
+   * through a custom server independent of the type of data.
+   */
+  tunnel?: string;
 
   /**
    * The release identifier used when uploading respective source maps. Specify
@@ -117,6 +125,17 @@ export interface Options {
    * ignored.
    */
   tracesSampleRate?: number;
+
+  /**
+   * A flag enabling Sessions Tracking feature.
+   * By default, Sessions Tracking is enabled.
+   */
+  autoSessionTracking?: boolean;
+
+  /**
+   * Initial data to populate scope.
+   */
+  initialScope?: CaptureContext;
 
   /**
    * Set of metadata about the SDK that can be internally used to enhance envelopes and events,

@@ -23,7 +23,6 @@ import {
 } from '@sentry/types';
 import { consoleSandbox, dateTimestampInSeconds, getGlobalObject, isNodeEnv, logger, uuid4 } from '@sentry/utils';
 
-import { Carrier, DomainAsCarrier, Layer } from './interfaces';
 import { Scope } from './scope';
 import { Session } from './session';
 
@@ -35,7 +34,7 @@ import { Session } from './session';
  *
  * @hidden
  */
-export const API_VERSION = 3;
+export const API_VERSION = 4;
 
 /**
  * Default maximum number of breadcrumbs added to an event. Can be overwritten
@@ -44,10 +43,45 @@ export const API_VERSION = 3;
 const DEFAULT_BREADCRUMBS = 100;
 
 /**
- * Absolute maximum number of breadcrumbs added to an event. The
- * `maxBreadcrumbs` option cannot be higher than this value.
+ * A layer in the process stack.
+ * @hidden
  */
-const MAX_BREADCRUMBS = 100;
+export interface Layer {
+  client?: Client;
+  scope?: Scope;
+}
+
+/**
+ * An object that contains a hub and maintains a scope stack.
+ * @hidden
+ */
+export interface Carrier {
+  __SENTRY__?: {
+    hub?: Hub;
+    /**
+     * Extra Hub properties injected by various SDKs
+     */
+    integrations?: Integration[];
+    extensions?: {
+      /** Hack to prevent bundlers from breaking our usage of the domain package in the cross-platform Hub package */
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      domain?: { [key: string]: any };
+    } & {
+      /** Extension methods for the hub, which are bound to the current Hub instance */
+      // eslint-disable-next-line @typescript-eslint/ban-types
+      [key: string]: Function;
+    };
+  };
+}
+
+/**
+ * @hidden
+ * @deprecated Can be removed once `Hub.getActiveDomain` is removed.
+ */
+export interface DomainAsCarrier extends Carrier {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  members: { [key: string]: any }[];
+}
 
 /**
  * @inheritDoc
@@ -249,7 +283,7 @@ export class Hub implements HubInterface {
 
     if (finalBreadcrumb === null) return;
 
-    scope.addBreadcrumb(finalBreadcrumb, Math.min(maxBreadcrumbs, MAX_BREADCRUMBS));
+    scope.addBreadcrumb(finalBreadcrumb, maxBreadcrumbs);
   }
 
   /**
@@ -390,10 +424,16 @@ export class Hub implements HubInterface {
   public startSession(context?: SessionContext): Session {
     const { scope, client } = this.getStackTop();
     const { release, environment } = (client && client.getOptions()) || {};
+
+    // Will fetch userAgent if called from browser sdk
+    const global = getGlobalObject<{ navigator?: { userAgent?: string } }>();
+    const { userAgent } = global.navigator || {};
+
     const session = new Session({
       release,
       environment,
       ...(scope && { user: scope.getUser() }),
+      ...(userAgent && { userAgent }),
       ...context,
     });
 
@@ -457,7 +497,13 @@ export class Hub implements HubInterface {
   }
 }
 
-/** Returns the global shim registry. */
+/**
+ * Returns the global shim registry.
+ *
+ * FIXME: This function is problematic, because despite always returning a valid Carrier,
+ * it has an optional `__SENTRY__` property, which then in turn requires us to always perform an unnecessary check
+ * at the call-site. We always access the carrier through this function, so we can guarantee that `__SENTRY__` is there.
+ **/
 export function getMainCarrier(): Carrier {
   const carrier = getGlobalObject();
   carrier.__SENTRY__ = carrier.__SENTRY__ || {

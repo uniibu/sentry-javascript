@@ -9,13 +9,16 @@
     "fix": "lerna run --parallel fix",
     "link:yarn": "lerna run --stream --concurrency 1 link:yarn",
     "lint": "lerna run --parallel lint",
+    "lint:eslint": "lerna run --parallel lint:eslint",
     "test": "lerna run --stream --concurrency 1 --sort test",
     "codecov": "codecov",
     "pack:changed": "lerna run pack --since",
-    "postpublish": "make publish-docs"
+    "prepublishOnly": "lerna run --stream --concurrency 1 prepublishOnly",
+    "postpublish": "make publish-docs && lerna run --stream --concurrency 1 postpublish",
+    "circularDepCheck": "lerna run --parallel circularDepCheck"
   },
   "volta": {
-    "node": "10.18.1",
+    "node": "14.17.0",
     "yarn": "1.22.5"
   },
   "workspaces": [
@@ -30,7 +33,6 @@
     "packages/integrations",
     "packages/minimal",
     "packages/nextjs",
-    "packages/next-plugin-sentry",
     "packages/node",
     "packages/react",
     "packages/serverless",
@@ -52,10 +54,12 @@
     "@types/sinon": "^7.0.11",
     "chai": "^4.1.2",
     "codecov": "^3.6.5",
+    "eslint": "7.27.0",
     "jest": "^24.7.1",
     "karma-browserstack-launcher": "^1.5.1",
     "karma-firefox-launcher": "^1.1.0",
     "lerna": "3.13.4",
+    "madge": "4.0.2",
     "mocha": "^6.1.4",
     "npm-run-all": "^4.1.2",
     "prettier": "1.19.0",

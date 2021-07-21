@@ -15,17 +15,28 @@
  */
 
 import { bindReporter } from './lib/bindReporter';
-import { getFirstHidden } from './lib/getFirstHidden';
+import { getVisibilityWatcher } from './lib/getVisibilityWatcher';
 import { initMetric } from './lib/initMetric';
 import { observe, PerformanceEntryHandler } from './lib/observe';
 import { onHidden } from './lib/onHidden';
-import { whenInput } from './lib/whenInput';
 import { ReportHandler } from './types';
 
-export const getLCP = (onReport: ReportHandler, reportAllChanges = false): void => {
-  const metric = initMetric('LCP');
-  const firstHidden = getFirstHidden();
+// https://wicg.github.io/largest-contentful-paint/#sec-largest-contentful-paint-interface
+export interface LargestContentfulPaint extends PerformanceEntry {
+  renderTime: DOMHighResTimeStamp;
+  loadTime: DOMHighResTimeStamp;
+  size: number;
+  id: string;
+  url: string;
+  element?: Element;
+  toJSON(): Record<string, string>;
+}
 
+const reportedMetricIDs: Record<string, boolean> = {};
+
+export const getLCP = (onReport: ReportHandler, reportAllChanges?: boolean): void => {
+  const visibilityWatcher = getVisibilityWatcher();
+  const metric = initMetric('LCP');
   let report: ReturnType<typeof bindReporter>;
 
   const entryHandler = (entry: PerformanceEntry): void => {
@@ -35,30 +46,37 @@ export const getLCP = (onReport: ReportHandler, reportAllChanges = false): void 
 
     // If the page was hidden prior to paint time of the entry,
     // ignore it and mark the metric as final, otherwise add the entry.
-    if (value < firstHidden.timeStamp) {
+    if (value < visibilityWatcher.firstHiddenTime) {
       metric.value = value;
       metric.entries.push(entry);
-    } else {
-      metric.isFinal = true;
     }
 
-    report();
+    if (report) {
+      report();
+    }
   };
 
   const po = observe('largest-contentful-paint', entryHandler);
 
   if (po) {
-    report = bindReporter(onReport, metric, po, reportAllChanges);
+    report = bindReporter(onReport, metric, reportAllChanges);
 
-    const onFinal = (): void => {
-      if (!metric.isFinal) {
+    const stopListening = (): void => {
+      if (!reportedMetricIDs[metric.id]) {
         po.takeRecords().map(entryHandler as PerformanceEntryHandler);
-        metric.isFinal = true;
-        report();
+        po.disconnect();
+        reportedMetricIDs[metric.id] = true;
+        report(true);
       }
     };
 
-    void whenInput().then(onFinal);
-    onHidden(onFinal, true);
+    // Stop listening after input. Note: while scrolling is an input that
+    // stop LCP observation, it's unreliable since it can be programmatically
+    // generated. See: https://github.com/GoogleChrome/web-vitals/issues/75
+    ['keydown', 'click'].forEach(type => {
+      addEventListener(type, stopListening, { once: true, capture: true });
+    });
+
+    onHidden(stopListening, true);
   }
 };

@@ -1,4 +1,3 @@
-import { getCurrentHub } from '@sentry/hub';
 import { addInstrumentationHandler, isInstanceOf, isMatchingPattern } from '@sentry/utils';
 
 import { Span } from '../span';
@@ -145,13 +144,7 @@ export function fetchCallback(
   shouldCreateSpan: (url: string) => boolean,
   spans: Record<string, Span>,
 ): void {
-  const currentClientOptions = getCurrentHub()
-    .getClient()
-    ?.getOptions();
-  if (
-    !(currentClientOptions && hasTracingEnabled(currentClientOptions)) ||
-    !(handlerData.fetchData && shouldCreateSpan(handlerData.fetchData.url))
-  ) {
+  if (!hasTracingEnabled() || !(handlerData.fetchData && shouldCreateSpan(handlerData.fetchData.url))) {
     return;
   }
 
@@ -181,7 +174,7 @@ export function fetchCallback(
         type: 'fetch',
       },
       description: `${handlerData.fetchData.method} ${handlerData.fetchData.url}`,
-      op: 'http',
+      op: 'http.client',
     });
 
     handlerData.fetchData.__span = span.spanId;
@@ -219,13 +212,10 @@ export function xhrCallback(
   shouldCreateSpan: (url: string) => boolean,
   spans: Record<string, Span>,
 ): void {
-  const currentClientOptions = getCurrentHub()
-    .getClient()
-    ?.getOptions();
   if (
-    !(currentClientOptions && hasTracingEnabled(currentClientOptions)) ||
-    !(handlerData.xhr && handlerData.xhr.__sentry_xhr__ && shouldCreateSpan(handlerData.xhr.__sentry_xhr__.url)) ||
-    handlerData.xhr.__sentry_own_request__
+    !hasTracingEnabled() ||
+    handlerData.xhr?.__sentry_own_request__ ||
+    !(handlerData.xhr?.__sentry_xhr__ && shouldCreateSpan(handlerData.xhr.__sentry_xhr__.url))
   ) {
     return;
   }
@@ -256,7 +246,7 @@ export function xhrCallback(
         url: xhr.url,
       },
       description: `${xhr.method} ${xhr.url}`,
-      op: 'http',
+      op: 'http.client',
     });
 
     handlerData.xhr.__sentry_xhr_span_id__ = span.spanId;

@@ -5,19 +5,33 @@ import { next } from '@ember/runloop';
 import { assert, warn } from '@ember/debug';
 import Ember from 'ember';
 import { timestampWithMs } from '@sentry/utils';
-import { OwnConfig } from './types';
+import { GlobalConfig, OwnConfig } from './types';
+import { getGlobalObject } from '@sentry/utils';
 
 declare module '@ember/debug' {
   export function assert(desc: string, test: unknown): void;
 }
 
-export function InitSentryForEmber(_runtimeConfig: BrowserOptions | undefined) {
-  const config = getOwnConfig<OwnConfig>().sentryConfig;
+function _getSentryInitConfig() {
+  const _global = getGlobalObject<GlobalConfig>();
+  _global.__sentryEmberConfig = _global.__sentryEmberConfig ?? {};
+  return _global.__sentryEmberConfig;
+}
 
-  assert('Missing configuration.', config);
-  assert('Missing configuration for Sentry.', config.sentry || _runtimeConfig);
+export function InitSentryForEmber(_runtimeConfig?: BrowserOptions) {
+  const environmentConfig = getOwnConfig<OwnConfig>().sentryConfig;
 
-  const initConfig = Object.assign({}, config.sentry, _runtimeConfig || {});
+  assert('Missing configuration.', environmentConfig);
+  assert('Missing configuration for Sentry.', environmentConfig.sentry || _runtimeConfig);
+
+  if (!environmentConfig.sentry) {
+    // If environment config is not specified but the above assertion passes, use runtime config.
+    environmentConfig.sentry = { ..._runtimeConfig } as any;
+  }
+
+  // Merge runtime config into environment config, preferring runtime.
+  Object.assign(environmentConfig.sentry, _runtimeConfig || {});
+  const initConfig = Object.assign({}, environmentConfig.sentry);
 
   initConfig._metadata = initConfig._metadata || {};
   initConfig._metadata.sdk = {
@@ -31,10 +45,14 @@ export function InitSentryForEmber(_runtimeConfig: BrowserOptions | undefined) {
     version: SDK_VERSION,
   };
 
+  // Persist Sentry init options so they are identical when performance initializers call init again.
+  const sentryInitConfig = _getSentryInitConfig();
+  Object.assign(sentryInitConfig, initConfig);
+
   Sentry.init(initConfig);
 
   if (macroCondition(isDevelopingApp())) {
-    if (config.ignoreEmberOnErrorWarning) {
+    if (environmentConfig.ignoreEmberOnErrorWarning) {
       return;
     }
     next(null, function() {
@@ -71,7 +89,12 @@ export const instrumentRoutePerformance = (BaseRoute: any) => {
   return {
     [BaseRoute.name]: class extends BaseRoute {
       beforeModel(...args: any[]) {
-        return instrumentFunction('ember.route.beforeModel', (<any>this).fullRouteName, super.beforeModel.bind(this), args);
+        return instrumentFunction(
+          'ember.route.beforeModel',
+          (<any>this).fullRouteName,
+          super.beforeModel.bind(this),
+          args,
+        );
       }
 
       async model(...args: any[]) {
@@ -79,7 +102,12 @@ export const instrumentRoutePerformance = (BaseRoute: any) => {
       }
 
       async afterModel(...args: any[]) {
-        return instrumentFunction('ember.route.afterModel', (<any>this).fullRouteName, super.afterModel.bind(this), args);
+        return instrumentFunction(
+          'ember.route.afterModel',
+          (<any>this).fullRouteName,
+          super.afterModel.bind(this),
+          args,
+        );
       }
 
       async setupController(...args: any[]) {
@@ -95,3 +123,6 @@ export const instrumentRoutePerformance = (BaseRoute: any) => {
 };
 
 export * from '@sentry/browser';
+
+// init is now the preferred way to call initialization for this addon.
+export const init = InitSentryForEmber;

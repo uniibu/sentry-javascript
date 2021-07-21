@@ -15,6 +15,7 @@ const CATEGORY_MAPPING: {
   event: 'error',
   transaction: 'transaction',
   session: 'session',
+  attachment: 'attachment',
 };
 
 /** Base Transport class implementation */
@@ -34,7 +35,7 @@ export abstract class BaseTransport implements Transport {
   protected readonly _rateLimits: Record<string, Date> = {};
 
   public constructor(public options: TransportOptions) {
-    this._api = new API(options.dsn, options._metadata);
+    this._api = new API(options.dsn, options._metadata, options.tunnel);
     // eslint-disable-next-line deprecation/deprecation
     this.url = this._api.getStoreEndpointWithUrlEncodedAuth();
   }
@@ -75,7 +76,8 @@ export abstract class BaseTransport implements Transport {
      * https://developer.mozilla.org/en-US/docs/Web/API/Headers/get
      */
     const limited = this._handleRateLimit(headers);
-    if (limited) logger.warn(`Too many requests, backing off until: ${this._disabledUntil(requestType)}`);
+    if (limited)
+      logger.warn(`Too many ${requestType} requests, backing off until: ${this._disabledUntil(requestType)}`);
 
     if (status === Status.Success) {
       resolve({ status });

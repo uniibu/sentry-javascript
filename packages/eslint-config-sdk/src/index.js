@@ -20,6 +20,9 @@ module.exports = {
       plugins: ['@typescript-eslint', 'jsdoc', 'deprecation'],
       parser: '@typescript-eslint/parser',
       rules: {
+        // We want to guard against using the equality operator with empty arrays
+        '@sentry-internal/sdk/no-eq-empty': 'error',
+
         // Unused variables should be removed unless they are marked with and underscore (ex. _varName).
         '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
 
@@ -52,7 +55,9 @@ module.exports = {
         // in SDKs, we should make sure that we are correctly preserving class scope.
         '@typescript-eslint/unbound-method': 'error',
 
-        // Private and protected members of a class should be prefixed with a leading underscore
+        // Private and protected members of a class should be prefixed with a leading underscore.
+        // typeLike declarations (class, interface, typeAlias, enum, typeParameter) should be
+        // PascalCase.
         '@typescript-eslint/naming-convention': [
           'error',
           {
@@ -66,6 +71,10 @@ module.exports = {
             modifiers: ['protected'],
             format: ['camelCase'],
             leadingUnderscore: 'require',
+          },
+          {
+            selector: 'typeLike',
+            format: ['PascalCase'],
           },
         ],
 
@@ -98,6 +107,10 @@ module.exports = {
         // instead of any. This is especially important for methods that expose a public API, as users
         // should know exactly what they have to provide to use those methods. Turned off in tests.
         '@typescript-eslint/no-unsafe-member-access': 'error',
+
+        // Be explicit about class member accessibility (public, private, protected). Turned off
+        // on tests for ease of use.
+        '@typescript-eslint/explicit-member-accessibility': ['error'],
       },
     },
     {
@@ -134,6 +147,7 @@ module.exports = {
         'no-unused-expressions': 'off',
         '@typescript-eslint/no-unused-expressions': 'off',
         '@typescript-eslint/no-unsafe-member-access': 'off',
+        '@typescript-eslint/explicit-member-accessibility': 'off',
       },
     },
     {

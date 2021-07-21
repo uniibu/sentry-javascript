@@ -29,12 +29,6 @@ export interface BrowserOptions extends Options {
 
   /** @deprecated use {@link Options.denyUrls} instead. */
   blacklistUrls?: Array<string | RegExp>;
-
-  /**
-   * A flag enabling Sessions Tracking feature.
-   * By default, Sessions Tracking is enabled.
-   */
-  autoSessionTracking?: boolean;
 }
 
 /**
@@ -67,6 +61,7 @@ export class BrowserBackend extends BaseBackend<BrowserOptions> {
     const transportOptions = {
       ...this._options.transportOptions,
       dsn: this._options.dsn,
+      tunnel: this._options.tunnel,
       _metadata: this._options._metadata,
     };
 

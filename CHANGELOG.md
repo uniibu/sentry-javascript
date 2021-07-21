@@ -4,6 +4,144 @@
 
 - "You miss 100 percent of the chances you don't take. — Wayne Gretzky" — Michael Scott
 
+
+## 6.9.0
+
+- feat(browser): Use scope data in report dialog (#3792)
+- feat(core): Add `ensureNoCircularStructures` experiment to help debug serialization bugs (#3776)
+- feat(nextjs): Add options to disable webpack plugin (#3771)
+- feat(react): Support render props in `ErrorBoundary` (#3793)
+- fix(ember): Correctly cache ember types from prepublish hook (#3749)
+- fix(ember): Fix runtime config options not being merged (#3791)
+- fix(metrics): Check for cls entry sources (#3775)
+- fix(nextjs): Make `withSentryConfig` return type match given config type (#3760)
+- fix(node): Check if `captureRequestSession` is available before its called (#3773)
+- fix(node): Enable `autoSessionTracking` correctly (#3758)
+- fix(react): `allRoutes` cannot triple equal a new array instance (#3779)
+- fix(tracing): Add check for `document.scripts` in metrics (#3766)
+- fix(types): Update `ExtractedNodeRequestData` to include valid `query_params` for `tracesSampler` (#3715)
+- ref(gatsby): Default release to empty string (#3759)
+- ref(nextjs): Inject init code in `_app` and API routes (#3786)
+- ref(nextjs): Pre-disable-plugin-option config cleanup (#3770)
+- ref(nextjs): Stop setting redundant `productionBrowserSourceMaps` in config (#3765)
+
+## 6.8.0
+
+- [browser] feat: Enable serialization of multiple DOM attributes for breadcrumbs. (#3755)
+- [browser] feat: Make dedupe integration default for browser (#3730)
+- [core] fix: Correctly limit Buffer requests (#3736)
+- [ember] ref: Allow initing Ember without config entry (#3745)
+- [serverless] fix: wrapEventFunction does not await for async code (#3740)
+
+## 6.7.2
+
+- [core] fix: Do not track sessions if not enabled (#3686)
+- [core] fix: Prevent sending terminal status session updates (#3701)
+- [core] ref: Make `beforeSend` more strict (#3713)
+- [browser] ref: Log which request type has been limited (#3687)
+- [nextjs] feat: Auto enable node http integration on server (#3675)
+- [nextjs] fix: Correctly handle functional next config in `withSentryConfig` (#3698)
+- [nextjs] fix: Fix conflict with other libraries modifying webpack `entry` property (#3703)
+- [nextjs] fix: Update @sentry/webpack-plugin to 1.15.1 in @sentry/nextjs to resolve build timeouts issue (#3708)
+- [nextjs] ref: Split up config code and add tests (#3693)
+
+## 6.7.1
+
+- [core] fix: Add event type to item header when envelopes are forced (#3676)
+- [core] fix: Include DSN in envelope header for sessions (#3680)
+- [core] fix: Prevent scope from storing more than 100 breadcrumbs at the time (#3677)
+- [node] ref: Remove default http(s) import from http-module (#3681)
+- [nextjs] feat: Add body data to transaction `request` context (#3672)
+
+## 6.7.0
+
+- [core] feat: Add `tunnel` option to support request tunneling for dealing with ad-blockers (#3521)
+
+## 6.6.0
+
+- [node] feat: Allow for overriding custom `UrlParser` in Node.js transports (#3612)
+- [browser] feat: Add `serializeAttribute` option to DOM breadcrumbs. (#3620)
+- [nextjs] fix: `Improve NextConfigExports` compatibility (#3592)
+- [nextjs] fix: Use correct abs path for server init (#3649)
+- [angular] fix: Do not run change detection when capturing the exception (#3618)
+- [angular] fix: Do not run change detection when finishing transaction (#3622)
+- [angular] fix: Provide a single compilation unit for the `trace` directive (#3617)
+- [utils] fix: Check for `performance.now` when calculating browser timing (#3657)
+- [integrations] fix: Run rewriting for both `exception` and `stacktrace` events (#3653)
+- [node] ref: Replace old-style `require(console)` with a global object (#3623)
+- [node] ref: Make `HTTPModule` more abstract to be able to use it in non-Node.JS environments (#3655)
+- [nextjs] ref: Export `BrowserTracing` integration directly from `@sentry/nextjs` (#3647)
+
+## 6.5.1
+
+- [nextjs] fix: Prevent webpack 5 from crashing server (#3642)
+- [eslint] build: Upgrade to eslint 7.27.0 (#3639)
+- [nextjs] test: Add nextjs integration tests for Server and Browser (#3632)
+- [browser] ref: Don't send session duration in browser environments (#3616)
+- [hub] fix: Correctly compute session durations (#3616)
+
+## 6.5.0
+
+- [angular] fix: prevent memory leak when the root view is removed (#3594)
+- [browser] fix: Do not trigger session on meaningless navigation (#3608)
+- [nextjs] feat: Frontend + withSentry Performance Monitoring (#3580)
+- [react] fix: Use history object for init transaction name (#3609)
+
+## 6.4.1
+
+- [ember] ref: Fix merging of runtime config with environment config. (#3563)
+- [angular] ref: Allow angular v12 as a peer dependency. (#3569)
+- [tracing] fix: Avoid browser tracing initialization on node environment (#3548)
+- [react] ref: Make RouteProps typing more generic (#3570)
+- [tracing] fix: Correctly handle pg.Cursor in pg query method (#3567)
+- [types] fix: Add attachment to SentryRequestType (#3561)
+- [nextjs] ref: Disable node session for next.js (#3558)
+- [eslint] feat: Add new eslint rules (#3545)
+
+## 6.4.0
+
+- [core] feat: initialScope in SDK Options (#3544)
+- [node] feat: Release Health for Node (Session Aggregates) (#3319)
+- [node] feat: Autoload Database Integrations in Node environment (#3483)
+- [react] feat: Add support for React 17 Error Boundaries (#3532)
+- [tracing] fix: Generate TTFB (Time to first byte) from span data (#3515)
+
+## 6.3.6
+
+- [nextjs] fix: Fix error logging (#3512)
+- [nextjs] fix: Add environment automatically (#3495)
+- [node] feat: Implement category based rate limiting (#3435)
+- [node] fix: Set handled to false when it is a crash (#3493)
+- [tracing] fix: Mark tracing distributables as side effects (#3519)
+
+## 6.3.5
+
+- [nextjs] fix: Add tslib dependecy; change inject order (#3487)
+
+## 6.3.4
+
+- [nextjs] fix: API routes logging (#3479)
+
+## 6.3.3
+
+- [nextjs] fix: User server types (#3471)
+
+## 6.3.2
+
+- [nextjs] ref: Remove next.js plugin (#3462)
+- [core] fix: Prevent InboundFilters mergeOptions method from breaking users code (#3458)
+
+## 6.3.1
+
+- [angular] fix: Make SentryErrorHandler extensible and export it publicly (#3438)
+- [browser] feat: Capture information about the LCP element culprit (#3427)
+- [core] fix: Correctly attach installed integrations to sdkinfo (#3447)
+- [ember] fix: Add guards to ensure marks exist (#3436)
+- [nextjs] fix: Fix incomplete merging of user config with Sentry config (#3434)
+- [nextjs] ref: Use resolved paths for `require` calls in config code (#3426)
+- [node] fix: Fix for manual tests in node (#3428)
+- [transports] feat: Honor no_proxy env variable (#3412)
+
 ## 6.3.0
 
 - [browser] feat: Parse safari-extension and safari-web-extension errors (#3374)

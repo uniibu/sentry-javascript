@@ -5,12 +5,16 @@ import * as Sentry from '@sentry/browser';
 import { Span, Transaction, Integration } from '@sentry/types';
 import { EmberRunQueues } from '@ember/runloop/-private/types';
 import { getActiveTransaction } from '..';
-import { browserPerformanceTimeOrigin, timestampWithMs } from '@sentry/utils';
+import { browserPerformanceTimeOrigin, getGlobalObject, timestampWithMs } from '@sentry/utils';
 import { macroCondition, isTesting, getOwnConfig } from '@embroider/macros';
-import { EmberSentryConfig, OwnConfig } from '../types';
+import { EmberSentryConfig, GlobalConfig, OwnConfig } from '../types';
 
 function getSentryConfig() {
-  return getOwnConfig<OwnConfig>().sentryConfig;
+  const _global = getGlobalObject<GlobalConfig>();
+  _global.__sentryEmberConfig = _global.__sentryEmberConfig ?? {};
+  const environmentConfig = getOwnConfig<OwnConfig>().sentryConfig;
+  Object.assign(environmentConfig.sentry, _global.__sentryEmberConfig);
+  return environmentConfig;
 }
 
 export function initialize(appInstance: ApplicationInstance): void {
@@ -305,6 +309,12 @@ function _instrumentInitialLoad(config: EmberSentryConfig) {
   }
   const measureName = '@sentry/ember:initial-load';
 
+  const startMarkExists = performance.getEntriesByName(startName).length > 0;
+  const endMarkExists = performance.getEntriesByName(endName).length > 0;
+  if (!startMarkExists || !endMarkExists) {
+    return;
+  }
+
   performance.measure(measureName, startName, endName);
   const measures = performance.getEntriesByName(measureName);
   const measure = measures[0];
@@ -327,6 +337,8 @@ function _instrumentInitialLoad(config: EmberSentryConfig) {
 export async function instrumentForPerformance(appInstance: ApplicationInstance) {
   const config = getSentryConfig();
   const sentryConfig = config.sentry;
+  // Maintaining backwards compatibility with config.browserTracingOptions, but passing it with Sentry options is preferred.
+  const browserTracingOptions = config.browserTracingOptions || config.sentry.browserTracingOptions || {};
 
   const tracing = await import('@sentry/tracing');
 
@@ -343,6 +355,7 @@ export async function instrumentForPerformance(appInstance: ApplicationInstance)
         _instrumentEmberRouter(routerService, routerMain, config, customStartTransaction, startTransactionOnPageLoad);
       },
       idleTimeout,
+      ...browserTracingOptions,
     }),
   ];
 

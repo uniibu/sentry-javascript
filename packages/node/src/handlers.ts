@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { captureException, getCurrentHub, startTransaction, withScope } from '@sentry/core';
 import { extractTraceparentData, Span } from '@sentry/tracing';
-import { Event, ExtractedNodeRequestData, Transaction } from '@sentry/types';
+import { Event, ExtractedNodeRequestData, RequestSessionStatus, Transaction } from '@sentry/types';
 import { isPlainObject, isString, logger, normalize, stripUrlQueryAndFragment } from '@sentry/utils';
 import * as cookie from 'cookie';
 import * as domain from 'domain';
@@ -10,7 +10,8 @@ import * as http from 'http';
 import * as os from 'os';
 import * as url from 'url';
 
-import { flush } from './sdk';
+import { NodeClient } from './client';
+import { flush, isAutoSessionTrackingEnabled } from './sdk';
 
 export interface ExpressRequest {
   baseUrl?: string;
@@ -64,6 +65,7 @@ export function tracingHandler(): (
         op: 'http.server',
         ...traceparentData,
       },
+      // extra context passed to the tracesSampler
       { request: extractRequestData(req) },
     );
 
@@ -198,22 +200,22 @@ export function extractRequestData(
   const requestData: { [key: string]: any } = {};
 
   // headers:
-  //   node, express: req.headers
+  //   node, express, nextjs: req.headers
   //   koa: req.header
   const headers = (req.headers || req.header || {}) as {
     host?: string;
     cookie?: string;
   };
   // method:
-  //   node, express, koa: req.method
+  //   node, express, koa, nextjs: req.method
   const method = req.method;
   // host:
   //   express: req.hostname in > 4 and req.host in < 4
   //   koa: req.host
-  //   node: req.headers.host
+  //   node, nextjs: req.headers.host
   const host = req.hostname || req.host || headers.host || '<no host>';
   // protocol:
-  //   node: <n/a>
+  //   node, nextjs: <n/a>
   //   express, koa: req.protocol
   const protocol =
     req.protocol === 'https' || req.secure || ((req.socket || {}) as { encrypted?: boolean }).encrypted
@@ -221,7 +223,7 @@ export function extractRequestData(
       : 'http';
   // url (including path and query string):
   //   node, express: req.originalUrl
-  //   koa: req.url
+  //   koa, nextjs: req.url
   const originalUrl = (req.originalUrl || req.url || '') as string;
   // absolute url
   const absoluteUrl = `${protocol}://${host}${originalUrl}`;
@@ -240,23 +242,27 @@ export function extractRequestData(
       case 'cookies':
         // cookies:
         //   node, express, koa: req.headers.cookie
-        //   vercel, sails.js, express (w/ cookie middleware): req.cookies
+        //   vercel, sails.js, express (w/ cookie middleware), nextjs: req.cookies
         // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         requestData.cookies = req.cookies || cookie.parse(headers.cookie || '');
         break;
       case 'query_string':
         // query string:
         //   node: req.url (raw)
-        //   express, koa: req.query
+        //   express, koa, nextjs: req.query
         // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        requestData.query_string = url.parse(originalUrl || '', false).query;
+        requestData.query_string = req.query || url.parse(originalUrl || '', false).query;
         break;
       case 'data':
         if (method === 'GET' || method === 'HEAD') {
           break;
         }
         // body data:
-        //   node, express, koa: req.body
+        //   express, koa, nextjs: req.body
+        //
+        //   when using node by itself, you have to read the incoming stream(see
+        //   https://nodejs.dev/learn/get-http-request-body-data-using-nodejs); if a user is doing that, we can't know
+        //   where they're going to store the final result, so they'll have to capture this data themselves
         if (req.body !== undefined) {
           requestData.data = isString(req.body) ? req.body : JSON.stringify(normalize(req.body));
         }
@@ -340,7 +346,7 @@ export function parseRequest(event: Event, req: ExpressRequest, options?: ParseR
   }
 
   // client ip:
-  //   node: req.connection.remoteAddress
+  //   node, nextjs: req.connection.remoteAddress
   //   express, koa: req.ip
   if (options.ip) {
     const ip = req.ip || (req.connection && req.connection.remoteAddress);
@@ -353,6 +359,8 @@ export function parseRequest(event: Event, req: ExpressRequest, options?: ParseR
   }
 
   if (options.transaction && !event.transaction) {
+    // TODO do we even need this anymore?
+    // TODO make this work for nextjs
     event.transaction = extractTransaction(req, options.transaction);
   }
 
@@ -370,6 +378,19 @@ export type RequestHandlerOptions = ParseRequestOptions & {
 export function requestHandler(
   options?: RequestHandlerOptions,
 ): (req: http.IncomingMessage, res: http.ServerResponse, next: (error?: any) => void) => void {
+  const currentHub = getCurrentHub();
+  const client = currentHub.getClient<NodeClient>();
+  // Initialise an instance of SessionFlusher on the client when `autoSessionTracking` is enabled and the
+  // `requestHandler` middleware is used indicating that we are running in SessionAggregates mode
+  if (client && isAutoSessionTrackingEnabled(client)) {
+    client.initSessionFlusher();
+
+    // If Scope contains a Single mode Session, it is removed in favor of using Session Aggregates mode
+    const scope = currentHub.getScope();
+    if (scope && scope.getSession()) {
+      scope.setSession();
+    }
+  }
   return function sentryRequestMiddleware(
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -379,7 +400,7 @@ export function requestHandler(
       // eslint-disable-next-line @typescript-eslint/unbound-method
       const _end = res.end;
       res.end = function(chunk?: any | (() => void), encoding?: string | (() => void), cb?: () => void): void {
-        flush(options.flushTimeout)
+        void flush(options.flushTimeout)
           .then(() => {
             _end.call(this, chunk, encoding, cb);
           })
@@ -392,10 +413,36 @@ export function requestHandler(
     local.add(req);
     local.add(res);
     local.on('error', next);
+
     local.run(() => {
-      getCurrentHub().configureScope(scope =>
-        scope.addEventProcessor((event: Event) => parseRequest(event, req, options)),
-      );
+      const currentHub = getCurrentHub();
+
+      currentHub.configureScope(scope => {
+        scope.addEventProcessor((event: Event) => parseRequest(event, req, options));
+        const client = currentHub.getClient<NodeClient>();
+        if (isAutoSessionTrackingEnabled(client)) {
+          const scope = currentHub.getScope();
+          if (scope) {
+            // Set `status` of `RequestSession` to Ok, at the beginning of the request
+            scope.setRequestSession({ status: RequestSessionStatus.Ok });
+          }
+        }
+      });
+
+      res.once('finish', () => {
+        const client = currentHub.getClient<NodeClient>();
+        if (isAutoSessionTrackingEnabled(client)) {
+          setImmediate(() => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            if (client && (client as any)._captureRequestSession) {
+              // Calling _captureRequestSession to capture request session at the end of the request by incrementing
+              // the correct SessionAggregates bucket i.e. crashed, errored or exited
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+              (client as any)._captureRequestSession();
+            }
+          });
+        }
+      });
       next();
     });
   };
@@ -456,6 +503,25 @@ export function errorHandler(options?: {
         if (transaction && _scope.getSpan() === undefined) {
           _scope.setSpan(transaction);
         }
+
+        const client = getCurrentHub().getClient<NodeClient>();
+        if (client && isAutoSessionTrackingEnabled(client)) {
+          // Check if the `SessionFlusher` is instantiated on the client to go into this branch that marks the
+          // `requestSession.status` as `Crashed`, and this check is necessary because the `SessionFlusher` is only
+          // instantiated when the the`requestHandler` middleware is initialised, which indicates that we should be
+          // running in SessionAggregates mode
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+          const isSessionAggregatesMode = (client as any)._sessionFlusher !== undefined;
+          if (isSessionAggregatesMode) {
+            const requestSession = _scope.getRequestSession();
+            // If an error bubbles to the `errorHandler`, then this is an unhandled error, and should be reported as a
+            // Crashed session. The `_requestSession.status` is checked to ensure that this error is happening within
+            // the bounds of a request, and if so the status is updated
+            if (requestSession && requestSession.status !== undefined)
+              requestSession.status = RequestSessionStatus.Crashed;
+          }
+        }
+
         const eventId = captureException(error);
         // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         (res as any).sentry = eventId;

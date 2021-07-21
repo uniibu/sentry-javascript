@@ -23,18 +23,6 @@ export type RouteConfig = {
   routes?: RouteConfig[];
 };
 
-interface RouteProps {
-  [propName: string]: any;
-  location?: Location;
-  component?: React.ComponentType<any> | React.ComponentType<any>;
-  render?: (props: any) => React.ReactNode;
-  children?: ((props: any) => React.ReactNode) | React.ReactNode;
-  path?: string | string[];
-  exact?: boolean;
-  sensitive?: boolean;
-  strict?: boolean;
-}
-
 type MatchPath = (pathname: string, props: string | string[] | any, parent?: Match | null) => Match | null;
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -64,8 +52,20 @@ function createReactRouterInstrumentation(
   allRoutes: RouteConfig[] = [],
   matchPath?: MatchPath,
 ): ReactRouterInstrumentation {
+  function getInitPathName(): string | undefined {
+    if (history && history.location) {
+      return history.location.pathname;
+    }
+
+    if (global && global.location) {
+      return global.location.pathname;
+    }
+
+    return undefined;
+  }
+
   function getTransactionName(pathname: string): string {
-    if (allRoutes === [] || !matchPath) {
+    if (allRoutes.length === 0 || !matchPath) {
       return pathname;
     }
 
@@ -81,9 +81,10 @@ function createReactRouterInstrumentation(
   }
 
   return (customStartTransaction, startTransactionOnPageLoad = true, startTransactionOnLocationChange = true): void => {
-    if (startTransactionOnPageLoad && global && global.location) {
+    const initPathName = getInitPathName();
+    if (startTransactionOnPageLoad && initPathName) {
       activeTransaction = customStartTransaction({
-        name: getTransactionName(global.location.pathname),
+        name: getTransactionName(initPathName),
         op: 'pageload',
         tags: {
           'routing.instrumentation': name,
@@ -147,20 +148,26 @@ function computeRootMatch(pathname: string): Match {
   return { path: '/', url: '/', params: {}, isExact: pathname === '/' };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function withSentryRouting<P extends RouteProps & Record<string, any>>(
-  Route: React.ComponentType<P>,
-): React.FC<P> {
-  const componentDisplayName = Route.displayName || Route.name;
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export function withSentryRouting<P extends Record<string, any>, R extends React.ComponentType<P>>(Route: R): R {
+  const componentDisplayName = (Route as any).displayName || (Route as any).name;
 
   const WrappedRoute: React.FC<P> = (props: P) => {
     if (activeTransaction && props && props.computedMatch && props.computedMatch.isExact) {
       activeTransaction.setName(props.computedMatch.path);
     }
+
+    // @ts-ignore Setting more specific React Component typing for `R` generic above
+    // will break advanced type inference done by react router params:
+    // https://github.com/DefinitelyTyped/DefinitelyTyped/blob/13dc4235c069e25fe7ee16e11f529d909f9f3ff8/types/react-router/index.d.ts#L154-L164
     return <Route {...props} />;
   };
 
   WrappedRoute.displayName = `sentryRoute(${componentDisplayName})`;
   hoistNonReactStatics(WrappedRoute, Route);
+  // @ts-ignore Setting more specific React Component typing for `R` generic above
+  // will break advanced type inference done by react router params:
+  // https://github.com/DefinitelyTyped/DefinitelyTyped/blob/13dc4235c069e25fe7ee16e11f529d909f9f3ff8/types/react-router/index.d.ts#L154-L164
   return WrappedRoute;
 }
+/* eslint-enable @typescript-eslint/no-explicit-any */

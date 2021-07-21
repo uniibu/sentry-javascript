@@ -1,5 +1,5 @@
 /** Possible SentryRequest types that can be used to make a distinction between Sentry features */
-export type SentryRequestType = 'event' | 'transaction' | 'session';
+export type SentryRequestType = 'event' | 'transaction' | 'session' | 'attachment';
 
 /** A generic client request. */
 export interface SentryRequest {
@@ -13,8 +13,10 @@ export interface Request {
   url?: string;
   method?: string;
   data?: any;
-  query_string?: string;
+  query_string?: QueryParams;
   cookies?: { [key: string]: string };
   env?: { [key: string]: string };
   headers?: { [key: string]: string };
 }
+
+export type QueryParams = string | { [key: string]: string } | Array<[string, string]>;

@@ -17,6 +17,8 @@ env:
     ${{ github.workspace }}/packages/**/build
     ${{ github.workspace }}/packages/**/dist
     ${{ github.workspace }}/packages/**/esm
+    ${{ github.workspace }}/packages/ember/*.d.ts
+    ${{ github.workspace }}/packages/ember/instance-initializers
     ${{ github.workspace }}/packages/serverless/dist-awslambda-layer/*.zip
 
   BUILD_CACHE_KEY: ${{ github.sha }}
@@ -76,6 +78,14 @@ jobs:
         # this file) to a constant and skip rebuilding all of the packages each time CI runs.
         if: steps.cache_built_packages.outputs.cache-hit == ''
         run: yarn build
+        # We are performing a `prepublishOnly` step manually because build workflow is not responsible for publishing
+        # the actual release. It only creates artifacts which then are uploaded and used by another workflow.
+        # Because of that, any `prepublishOnly` script is skipped and files it produces are not included in the tarball.
+        # We also cannot use `prepare` script which would be more suited, because it's run only before `pack` is called,
+        # and it's done from a `release` workflow and not here.
+      - name: Run prepublishOnly script
+        if: startsWith(github.ref, 'refs/heads/release/')
+        run: yarn prepublishOnly
     outputs:
       # this needs to be passed on, because the `needs` context only looks at direct ancestors (so steps which depend on
       # `job_build` can't see `job_install_deps` and what it returned)
@@ -131,6 +141,29 @@ jobs:
       - name: Run linter
         run: yarn lint
 
+  job_circular_dep_check:
+    name: Circular Dependency Check
+    needs: job_build
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out current commit (${{ github.sha }})
+        uses: actions/checkout@v2
+      - name: Set up Node
+        uses: actions/setup-node@v1
+      - name: Check dependency cache
+        uses: actions/cache@v2
+        with:
+          path: ${{ env.CACHED_DEPENDENCY_PATHS }}
+          key: ${{ needs.job_build.outputs.dependency_cache_key }}
+      - name: Check build cache
+        uses: actions/cache@v2
+        with:
+          path: ${{ env.CACHED_BUILD_PATHS }}
+          key: ${{ env.BUILD_CACHE_KEY }}
+      - name: Run madge
+        run: yarn circularDepCheck
+
   job_unit_test:
     name: Test (Node ${{ matrix.node }})
     needs: job_build
@@ -139,7 +172,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: [6, 8, 10, 12, 14]
+        node: [6, 8, 10, 12, 14, 16]
     steps:
       - name: Check out current commit (${{ github.sha }})
         uses: actions/checkout@v2
@@ -175,6 +208,8 @@ jobs:
     steps:
       - name: Check out current commit (${{ github.sha }})
         uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
       - name: Set up Node
         uses: actions/setup-node@v1
         with:
@@ -183,6 +218,7 @@ jobs:
           # that. If it passes, newer versions of Node should also be fine. This saves us from having to run the Ember
           # tests in our Node matrix above.
           node-version: '10'
+          fetch-depth: 0
       - name: Check dependency cache
         uses: actions/cache@v2
         with:
@@ -193,9 +229,17 @@ jobs:
         with:
           path: ${{ env.CACHED_BUILD_PATHS }}
           key: ${{ env.BUILD_CACHE_KEY }}
+      - name: Check changed files
+        id: changed-files-specific
+        uses: tj-actions/changed-files@v6.2
+        with:
+          files: .*packages\/(ember|browser|core|tracing|hub|minimal|types|utils)($|/.*)
+      # Only run ember tests if the files above have changed
       - name: Run Ember tests
+        if: steps.changed-files-specific.outputs.any_changed == 'true' || github.event_name == 'push'
         run: yarn test --scope=@sentry/ember
       - name: Compute test coverage
+        if: steps.changed-files-specific.outputs.any_changed == 'true' || github.event_name == 'push'
         uses: codecov/codecov-action@v1
 
   job_artifacts:

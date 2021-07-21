@@ -1,6 +1,6 @@
 import { Hub } from '@sentry/hub';
 import { EventProcessor, Integration } from '@sentry/types';
-import { dynamicRequire, fill, logger } from '@sentry/utils';
+import { fill, isThenable, loadModule, logger } from '@sentry/utils';
 
 interface PgClient {
   prototype: {
@@ -24,12 +24,9 @@ export class Postgres implements Integration {
    * @inheritDoc
    */
   public setupOnce(_: (callback: EventProcessor) => void, getCurrentHub: () => Hub): void {
-    let client: PgClient;
+    const pkg = loadModule<{ Client: PgClient }>('pg');
 
-    try {
-      const pgModule = dynamicRequire(module, 'pg') as { Client: PgClient };
-      client = pgModule.Client;
-    } catch (e) {
+    if (!pkg) {
       logger.error('Postgres Integration was unable to require `pg` package.');
       return;
     }
@@ -39,8 +36,9 @@ export class Postgres implements Integration {
      * function (query, params, callback) => void
      * function (query) => Promise
      * function (query, params) => Promise
+     * function (pg.Cursor) => pg.Cursor
      */
-    fill(client.prototype, 'query', function(orig: () => void | Promise<unknown>) {
+    fill(pkg.Client.prototype, 'query', function(orig: () => void | Promise<unknown>) {
       return function(this: unknown, config: unknown, values: unknown, callback: unknown) {
         const scope = getCurrentHub().getScope();
         const parentSpan = scope?.getSpan();
@@ -63,10 +61,17 @@ export class Postgres implements Integration {
           });
         }
 
-        return (orig.call(this, config, values) as Promise<unknown>).then((res: unknown) => {
-          span?.finish();
-          return res;
-        });
+        const rv = typeof values !== 'undefined' ? orig.call(this, config, values) : orig.call(this, config);
+
+        if (isThenable(rv)) {
+          return (rv as Promise<unknown>).then((res: unknown) => {
+            span?.finish();
+            return res;
+          });
+        }
+
+        span?.finish();
+        return rv;
       };
     });
   }

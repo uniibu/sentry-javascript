@@ -2,7 +2,7 @@ import { DsnLike } from './dsn';
 import { Event } from './event';
 import { Response } from './response';
 import { SdkMetadata } from './sdkmetadata';
-import { Session } from './session';
+import { Session, SessionAggregates } from './session';
 
 /** Transport used sending data to Sentry */
 export interface Transport {
@@ -16,9 +16,9 @@ export interface Transport {
   /**
    * Sends the session to the Envelope endpoint in Sentry.
    *
-   * @param session Session that should be sent to Sentry.
+   * @param session Session that should be sent to Sentry | Session Aggregates that should be sent to Sentry.
    */
-  sendSession?(session: Session): PromiseLike<Response>;
+  sendSession?(session: Session | SessionAggregates): PromiseLike<Response>;
 
   /**
    * Call this function to wait until all pending requests have been sent.
@@ -45,6 +45,8 @@ export interface TransportOptions {
   caCerts?: string;
   /** Fetch API init parameters */
   fetchParameters?: { [key: string]: string };
+  /** The envelope tunnel to use. */
+  tunnel?: string;
   /**
    * Set of metadata about the SDK that can be internally used to enhance envelopes and events,
    * and provide additional data about every request.

@@ -15,13 +15,22 @@ export { Mechanism } from './mechanism';
 export { ExtractedNodeRequestData, Primitive, WorkerLocation } from './misc';
 export { Options } from './options';
 export { Package } from './package';
-export { Request, SentryRequest, SentryRequestType } from './request';
+export { QueryParams, Request, SentryRequest, SentryRequestType } from './request';
 export { Response } from './response';
 export { Runtime } from './runtime';
 export { CaptureContext, Scope, ScopeContext } from './scope';
 export { SdkInfo } from './sdkinfo';
 export { SdkMetadata } from './sdkmetadata';
-export { Session, SessionContext, SessionStatus } from './session';
+export {
+  SessionAggregates,
+  AggregationCounts,
+  Session,
+  SessionContext,
+  SessionStatus,
+  RequestSession,
+  RequestSessionStatus,
+  SessionFlusherLike,
+} from './session';
 export { Severity } from './severity';
 export { Span, SpanContext } from './span';
 export { StackFrame } from './stackframe';
@@ -34,6 +43,7 @@ export {
   TraceparentData,
   Transaction,
   TransactionContext,
+  TransactionMetadata,
   TransactionSamplingMethod,
 } from './transaction';
 export { Thread } from './thread';

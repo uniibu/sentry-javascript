@@ -1,27 +1,33 @@
 import { DebugMeta, Event, SentryRequest, TransactionSamplingMethod } from '@sentry/types';
 
 import { API } from '../../src/api';
-import { eventToSentryRequest } from '../../src/request';
+import { eventToSentryRequest, sessionToSentryRequest } from '../../src/request';
+
+const ingestDsn = 'https://dogsarebadatkeepingsecrets@squirrelchasers.ingest.sentry.io/12312012';
+const ingestUrl =
+  'https://squirrelchasers.ingest.sentry.io/api/12312012/envelope/?sentry_key=dogsarebadatkeepingsecrets&sentry_version=7';
+const tunnel = 'https://hello.com/world';
+
+const api = new API(ingestDsn, {
+  sdk: {
+    integrations: ['AWSLambda'],
+    name: 'sentry.javascript.browser',
+    version: `12.31.12`,
+    packages: [{ name: 'npm:@sentry/browser', version: `12.31.12` }],
+  },
+});
+
+function parseEnvelopeRequest(request: SentryRequest): any {
+  const [envelopeHeaderString, itemHeaderString, eventString] = request.body.split('\n');
+
+  return {
+    envelopeHeader: JSON.parse(envelopeHeaderString),
+    itemHeader: JSON.parse(itemHeaderString),
+    event: JSON.parse(eventString),
+  };
+}
 
 describe('eventToSentryRequest', () => {
-  function parseEnvelopeRequest(request: SentryRequest): any {
-    const [envelopeHeaderString, itemHeaderString, eventString] = request.body.split('\n');
-
-    return {
-      envelopeHeader: JSON.parse(envelopeHeaderString),
-      itemHeader: JSON.parse(itemHeaderString),
-      event: JSON.parse(eventString),
-    };
-  }
-
-  const api = new API('https://dogsarebadatkeepingsecrets@squirrelchasers.ingest.sentry.io/12312012', {
-    sdk: {
-      integrations: ['AWSLambda'],
-      name: 'sentry.javascript.browser',
-      version: `12.31.12`,
-      packages: [{ name: 'npm:@sentry/browser', version: `12.31.12` }],
-    },
-  });
   let event: Event;
 
   beforeEach(() => {
@@ -37,7 +43,7 @@ describe('eventToSentryRequest', () => {
     };
   });
 
-  it(`adds transaction sampling information to item header`, () => {
+  it('adds transaction sampling information to item header', () => {
     event.debug_meta = { transactionSampling: { method: TransactionSamplingMethod.Rate, rate: 0.1121 } };
 
     const result = eventToSentryRequest(event, api);
@@ -121,6 +127,86 @@ describe('eventToSentryRequest', () => {
           ],
           version: '1337',
         },
+      }),
+    );
+  });
+
+  it('uses tunnel as the url if it is configured', () => {
+    const tunnelRequest = eventToSentryRequest(event, new API(ingestDsn, {}, tunnel));
+    expect(tunnelRequest.url).toEqual(tunnel);
+
+    const defaultRequest = eventToSentryRequest(event, new API(ingestDsn, {}));
+    expect(defaultRequest.url).toEqual(ingestUrl);
+  });
+
+  it('adds dsn to envelope header if tunnel is configured', () => {
+    const result = eventToSentryRequest(event, new API(ingestDsn, {}, tunnel));
+    const envelope = parseEnvelopeRequest(result);
+
+    expect(envelope.envelopeHeader).toEqual(
+      expect.objectContaining({
+        dsn: ingestDsn,
+      }),
+    );
+  });
+
+  it('adds default "event" item type to item header if tunnel is configured', () => {
+    delete event.type;
+
+    const result = eventToSentryRequest(event, new API(ingestDsn, {}, tunnel));
+    const envelope = parseEnvelopeRequest(result);
+
+    expect(envelope.itemHeader).toEqual(
+      expect.objectContaining({
+        type: 'event',
+      }),
+    );
+  });
+});
+
+describe('sessionToSentryRequest', () => {
+  it('test envelope creation for aggregateSessions', () => {
+    const aggregatedSession = {
+      attrs: { release: '1.0.x', environment: 'prod' },
+      aggregates: [{ started: '2021-04-08T12:18:00.000Z', exited: 2 }],
+    };
+    const result = sessionToSentryRequest(aggregatedSession, api);
+
+    const [envelopeHeaderString, itemHeaderString, sessionString] = result.body.split('\n');
+
+    expect(JSON.parse(envelopeHeaderString)).toEqual(
+      expect.objectContaining({
+        sdk: { name: 'sentry.javascript.browser', version: '12.31.12' },
+      }),
+    );
+    expect(JSON.parse(itemHeaderString)).toEqual(
+      expect.objectContaining({
+        type: 'sessions',
+      }),
+    );
+    expect(JSON.parse(sessionString)).toEqual(
+      expect.objectContaining({
+        attrs: { release: '1.0.x', environment: 'prod' },
+        aggregates: [{ started: '2021-04-08T12:18:00.000Z', exited: 2 }],
+      }),
+    );
+  });
+
+  it('uses tunnel as the url if it is configured', () => {
+    const tunnelRequest = sessionToSentryRequest({ aggregates: [] }, new API(ingestDsn, {}, tunnel));
+    expect(tunnelRequest.url).toEqual(tunnel);
+
+    const defaultRequest = sessionToSentryRequest({ aggregates: [] }, new API(ingestDsn, {}));
+    expect(defaultRequest.url).toEqual(ingestUrl);
+  });
+
+  it('adds dsn to envelope header if tunnel is configured', () => {
+    const result = sessionToSentryRequest({ aggregates: [] }, new API(ingestDsn, {}, tunnel));
+    const envelope = parseEnvelopeRequest(result);
+
+    expect(envelope.envelopeHeader).toEqual(
+      expect.objectContaining({
+        dsn: ingestDsn,
       }),
     );
   });

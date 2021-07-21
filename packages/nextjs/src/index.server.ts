@@ -1,8 +1,10 @@
-import { configureScope, init as nodeInit } from '@sentry/node';
+import { RewriteFrames } from '@sentry/integrations';
+import { configureScope, init as nodeInit, Integrations } from '@sentry/node';
 
+import { instrumentServer } from './utils/instrumentServer';
 import { MetadataBuilder } from './utils/metadataBuilder';
 import { NextjsOptions } from './utils/nextjsOptions';
-import { defaultRewriteFrames, getFinalServerIntegrations } from './utils/serverIntegrations';
+import { addIntegration } from './utils/userIntegrations';
 
 export * from '@sentry/node';
 
@@ -14,11 +16,11 @@ export { ErrorBoundary, withErrorBoundary } from '@sentry/react';
 export function init(options: NextjsOptions): void {
   const metadataBuilder = new MetadataBuilder(options, ['nextjs', 'node']);
   metadataBuilder.addSdkMetadata();
-  if (options.integrations) {
-    options.integrations = getFinalServerIntegrations(options.integrations);
-  } else {
-    options.integrations = [defaultRewriteFrames];
-  }
+  options.environment = options.environment || process.env.NODE_ENV;
+  // TODO capture project root and store in an env var for RewriteFrames?
+  addServerIntegrations(options);
+  // Right now we only capture frontend sessions for Next.js
+  options.autoSessionTracking = false;
 
   nodeInit(options);
   configureScope(scope => {
@@ -26,4 +28,33 @@ export function init(options: NextjsOptions): void {
   });
 }
 
-export { withSentryConfig } from './utils/config';
+const SOURCEMAP_FILENAME_REGEX = /^.*\/\.next\//;
+
+const defaultRewriteFramesIntegration = new RewriteFrames({
+  iteratee: frame => {
+    frame.filename = frame.filename?.replace(SOURCEMAP_FILENAME_REGEX, 'app:///_next/');
+    return frame;
+  },
+});
+
+const defaultHttpTracingIntegration = new Integrations.Http({ tracing: true });
+
+function addServerIntegrations(options: NextjsOptions): void {
+  if (options.integrations) {
+    options.integrations = addIntegration(defaultRewriteFramesIntegration, options.integrations);
+  } else {
+    options.integrations = [defaultRewriteFramesIntegration];
+  }
+
+  if (options.tracesSampleRate !== undefined || options.tracesSampler !== undefined) {
+    options.integrations = addIntegration(defaultHttpTracingIntegration, options.integrations, {
+      Http: { keyPath: '_tracing', value: true },
+    });
+  }
+}
+
+export { withSentryConfig } from './config';
+export { withSentry } from './utils/handlers';
+
+// wrap various server methods to enable error monitoring and tracing
+instrumentServer();

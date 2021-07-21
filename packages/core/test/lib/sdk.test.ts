@@ -1,3 +1,4 @@
+import { Scope } from '@sentry/hub';
 import { Client, Integration } from '@sentry/types';
 
 import { installedIntegrations } from '../../src/integration';
@@ -9,22 +10,30 @@ declare var global: any;
 
 const PUBLIC_DSN = 'https://username@domain/123';
 
-jest.mock('@sentry/hub', () => ({
-  getCurrentHub(): {
-    bindClient(client: Client): boolean;
-    getClient(): boolean;
-  } {
-    return {
-      getClient(): boolean {
-        return false;
-      },
-      bindClient(client: Client): boolean {
-        client.setupIntegrations();
-        return true;
-      },
-    };
-  },
-}));
+jest.mock('@sentry/hub', () => {
+  const original = jest.requireActual('@sentry/hub');
+  return {
+    ...original,
+    getCurrentHub(): {
+      bindClient(client: Client): boolean;
+      getClient(): boolean;
+      getScope(): Scope;
+    } {
+      return {
+        getClient(): boolean {
+          return false;
+        },
+        getScope(): Scope {
+          return new Scope();
+        },
+        bindClient(client: Client): boolean {
+          client.setupIntegrations();
+          return true;
+        },
+      };
+    },
+  };
+});
 
 class MockIntegration implements Integration {
   public name: string;

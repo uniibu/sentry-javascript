@@ -21,36 +21,68 @@ import { onHidden } from './lib/onHidden';
 import { ReportHandler } from './types';
 
 // https://wicg.github.io/layout-instability/#sec-layout-shift
-interface LayoutShift extends PerformanceEntry {
+export interface LayoutShift extends PerformanceEntry {
   value: number;
   hadRecentInput: boolean;
+  sources: Array<LayoutShiftAttribution>;
+  toJSON(): Record<string, unknown>;
 }
 
-export const getCLS = (onReport: ReportHandler, reportAllChanges = false): void => {
-  const metric = initMetric('CLS', 0);
+export interface LayoutShiftAttribution {
+  node?: Node;
+  previousRect: DOMRectReadOnly;
+  currentRect: DOMRectReadOnly;
+}
 
+export const getCLS = (onReport: ReportHandler, reportAllChanges?: boolean): void => {
+  const metric = initMetric('CLS', 0);
   let report: ReturnType<typeof bindReporter>;
+
+  let sessionValue = 0;
+  let sessionEntries: PerformanceEntry[] = [];
 
   const entryHandler = (entry: LayoutShift): void => {
     // Only count layout shifts without recent user input.
-    if (!entry.hadRecentInput) {
-      (metric.value as number) += entry.value;
-      metric.entries.push(entry);
-      report();
+    // TODO: Figure out why entry can be undefined
+    if (entry && !entry.hadRecentInput) {
+      const firstSessionEntry = sessionEntries[0];
+      const lastSessionEntry = sessionEntries[sessionEntries.length - 1];
+
+      // If the entry occurred less than 1 second after the previous entry and
+      // less than 5 seconds after the first entry in the session, include the
+      // entry in the current session. Otherwise, start a new session.
+      if (
+        sessionValue &&
+        sessionEntries.length !== 0 &&
+        entry.startTime - lastSessionEntry.startTime < 1000 &&
+        entry.startTime - firstSessionEntry.startTime < 5000
+      ) {
+        sessionValue += entry.value;
+        sessionEntries.push(entry);
+      } else {
+        sessionValue = entry.value;
+        sessionEntries = [entry];
+      }
+
+      // If the current session value is larger than the current CLS value,
+      // update CLS and the entries contributing to it.
+      if (sessionValue > metric.value) {
+        metric.value = sessionValue;
+        metric.entries = sessionEntries;
+        if (report) {
+          report();
+        }
+      }
     }
   };
 
   const po = observe('layout-shift', entryHandler as PerformanceEntryHandler);
   if (po) {
-    report = bindReporter(onReport, metric, po, reportAllChanges);
+    report = bindReporter(onReport, metric, reportAllChanges);
 
-    onHidden(({ isUnloading }) => {
+    onHidden(() => {
       po.takeRecords().map(entryHandler as PerformanceEntryHandler);
-
-      if (isUnloading) {
-        metric.isFinal = true;
-      }
-      report();
+      report(true);
     });
   }
 };

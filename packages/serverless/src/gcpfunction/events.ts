@@ -54,7 +54,7 @@ function _wrapEventFunction(
       }
       transaction.finish();
 
-      flush(options.flushTimeout)
+      void flush(options.flushTimeout)
         .then(() => {
           callback(...args);
         })
@@ -67,15 +67,11 @@ function _wrapEventFunction(
       return (fn as EventFunctionWithCallback)(data, context, newCallback);
     }
 
-    Promise.resolve()
+    return Promise.resolve()
       .then(() => (fn as EventFunction)(data, context))
       .then(
-        result => {
-          newCallback(null, result);
-        },
-        err => {
-          newCallback(err, undefined);
-        },
+        result => newCallback(null, result),
+        err => newCallback(err, undefined),
       );
   };
 }

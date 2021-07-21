@@ -13,6 +13,7 @@ import {
 import {
   dateTimestampInSeconds,
   Dsn,
+  isPlainObject,
   isPrimitive,
   isThenable,
   logger,
@@ -75,8 +76,8 @@ export abstract class BaseClient<B extends Backend, O extends Options> implement
   /** Array of used integrations. */
   protected _integrations: IntegrationIndex = {};
 
-  /** Number of call being processed */
-  protected _processing: number = 0;
+  /** Number of calls being processed */
+  protected _numProcessing: number = 0;
 
   /**
    * Initializes this client instance.
@@ -152,6 +153,11 @@ export abstract class BaseClient<B extends Backend, O extends Options> implement
    * @inheritDoc
    */
   public captureSession(session: Session): void {
+    if (!this._isEnabled()) {
+      logger.warn('SDK not enabled, will not capture session.');
+      return;
+    }
+
     if (!(typeof session.release === 'string')) {
       logger.warn('Discarded session because of missing or non-string release');
     } else {
@@ -179,11 +185,11 @@ export abstract class BaseClient<B extends Backend, O extends Options> implement
    * @inheritDoc
    */
   public flush(timeout?: number): PromiseLike<boolean> {
-    return this._isClientProcessing(timeout).then(ready => {
+    return this._isClientDoneProcessing(timeout).then(clientFinished => {
       return this._getBackend()
         .getTransport()
         .close(timeout)
-        .then(transportFlushed => ready && transportFlushed);
+        .then(transportFlushed => clientFinished && transportFlushed);
     });
   }
 
@@ -222,7 +228,6 @@ export abstract class BaseClient<B extends Backend, O extends Options> implement
   protected _updateSessionFromEvent(session: Session, event: Event): void {
     let crashed = false;
     let errored = false;
-    let userAgent;
     const exceptions = event.exception && event.exception.values;
 
     if (exceptions) {
@@ -237,24 +242,19 @@ export abstract class BaseClient<B extends Backend, O extends Options> implement
       }
     }
 
-    const user = event.user;
-    if (!session.userAgent) {
-      const headers = event.request ? event.request.headers : {};
-      for (const key in headers) {
-        if (key.toLowerCase() === 'user-agent') {
-          userAgent = headers[key];
-          break;
-        }
-      }
-    }
+    // A session is updated and that session update is sent in only one of the two following scenarios:
+    // 1. Session with non terminal status and 0 errors + an error occurred -> Will set error count to 1 and send update
+    // 2. Session with non terminal status and 1 error + a crash occurred -> Will set status crashed and send update
+    const sessionNonTerminal = session.status === SessionStatus.Ok;
+    const shouldUpdateAndSend = (sessionNonTerminal && session.errors === 0) || (sessionNonTerminal && crashed);
 
-    session.update({
-      ...(crashed && { status: SessionStatus.Crashed }),
-      user,
-      userAgent,
-      errors: session.errors + Number(errored || crashed),
-    });
-    this.captureSession(session);
+    if (shouldUpdateAndSend) {
+      session.update({
+        ...(crashed && { status: SessionStatus.Crashed }),
+        errors: session.errors || Number(errored || crashed),
+      });
+      this.captureSession(session);
+    }
   }
 
   /** Deliver captured session to Sentry */
@@ -262,14 +262,23 @@ export abstract class BaseClient<B extends Backend, O extends Options> implement
     this._getBackend().sendSession(session);
   }
 
-  /** Waits for the client to be done with processing. */
-  protected _isClientProcessing(timeout?: number): PromiseLike<boolean> {
+  /**
+   * Determine if the client is finished processing. Returns a promise because it will wait `timeout` ms before saying
+   * "no" (resolving to `false`) in order to give the client a chance to potentially finish first.
+   *
+   * @param timeout The time, in ms, after which to resolve to `false` if the client is still busy. Passing `0` (or not
+   * passing anything) will make the promise wait as long as it takes for processing to finish before resolving to
+   * `true`.
+   * @returns A promise which will resolve to `true` if processing is already done or finishes before the timeout, and
+   * `false` otherwise
+   */
+  protected _isClientDoneProcessing(timeout?: number): PromiseLike<boolean> {
     return new SyncPromise(resolve => {
       let ticked: number = 0;
       const tick: number = 1;
 
       const interval = setInterval(() => {
-        if (this._processing == 0) {
+        if (this._numProcessing == 0) {
           clearInterval(interval);
           resolve(true);
         } else {
@@ -389,6 +398,12 @@ export abstract class BaseClient<B extends Backend, O extends Options> implement
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       normalized.contexts.trace = event.contexts.trace;
     }
+
+    const { _experiments = {} } = this.getOptions();
+    if (_experiments.ensureNoCircularStructures) {
+      return normalize(normalized);
+    }
+
     return normalized;
   }
 
@@ -434,10 +449,10 @@ export abstract class BaseClient<B extends Backend, O extends Options> implement
    * @param event The event that will be filled with all integrations.
    */
   protected _applyIntegrationsMetadata(event: Event): void {
-    const sdkInfo = event.sdk;
     const integrationsArray = Object.keys(this._integrations);
-    if (sdkInfo && integrationsArray.length > 0) {
-      sdkInfo.integrations = integrationsArray;
+    if (integrationsArray.length > 0) {
+      event.sdk = event.sdk || {};
+      event.sdk.integrations = [...(event.sdk.integrations || []), ...integrationsArray];
     }
   }
 
@@ -485,7 +500,7 @@ export abstract class BaseClient<B extends Backend, O extends Options> implement
     const { beforeSend, sampleRate } = this.getOptions();
 
     if (!this._isEnabled()) {
-      return SyncPromise.reject(new SentryError('SDK not enabled, will not send event.'));
+      return SyncPromise.reject(new SentryError('SDK not enabled, will not capture event.'));
     }
 
     const isTransaction = event.type === 'transaction';
@@ -512,17 +527,7 @@ export abstract class BaseClient<B extends Backend, O extends Options> implement
         }
 
         const beforeSendResult = beforeSend(prepared, hint);
-        if (typeof beforeSendResult === 'undefined') {
-          throw new SentryError('`beforeSend` method has to return `null` or a valid event.');
-        } else if (isThenable(beforeSendResult)) {
-          return (beforeSendResult as PromiseLike<Event | null>).then(
-            event => event,
-            e => {
-              throw new SentryError(`beforeSend rejected with ${e}`);
-            },
-          );
-        }
-        return beforeSendResult;
+        return this._ensureBeforeSendRv(beforeSendResult);
       })
       .then(processedEvent => {
         if (processedEvent === null) {
@@ -558,16 +563,41 @@ export abstract class BaseClient<B extends Backend, O extends Options> implement
    * Occupies the client with processing and event
    */
   protected _process<T>(promise: PromiseLike<T>): void {
-    this._processing += 1;
-    promise.then(
+    this._numProcessing += 1;
+    void promise.then(
       value => {
-        this._processing -= 1;
+        this._numProcessing -= 1;
         return value;
       },
       reason => {
-        this._processing -= 1;
+        this._numProcessing -= 1;
         return reason;
       },
     );
+  }
+
+  /**
+   * Verifies that return value of configured `beforeSend` is of expected type.
+   */
+  protected _ensureBeforeSendRv(
+    rv: PromiseLike<Event | null> | Event | null,
+  ): PromiseLike<Event | null> | Event | null {
+    const nullErr = '`beforeSend` method has to return `null` or a valid event.';
+    if (isThenable(rv)) {
+      return (rv as PromiseLike<Event | null>).then(
+        event => {
+          if (!(isPlainObject(event) || event === null)) {
+            throw new SentryError(nullErr);
+          }
+          return event;
+        },
+        e => {
+          throw new SentryError(`beforeSend rejected with ${e}`);
+        },
+      );
+    } else if (!(isPlainObject(rv) || rv === null)) {
+      throw new SentryError(nullErr);
+    }
+    return rv;
   }
 }

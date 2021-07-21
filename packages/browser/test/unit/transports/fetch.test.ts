@@ -5,6 +5,7 @@ import { Event, Status, Transports } from '../../../src';
 
 const testDsn = 'https://123@sentry.io/42';
 const storeUrl = 'https://sentry.io/api/42/store/?sentry_key=123&sentry_version=7';
+const tunnel = 'https://hello.com/world';
 const eventPayload: Event = {
   event_id: '1337',
 };
@@ -48,6 +49,15 @@ describe('FetchTransport', () => {
           referrerPolicy: 'origin',
         }),
       ).equal(true);
+    });
+
+    it('sends a request to tunnel if configured', async () => {
+      transport = new Transports.FetchTransport({ dsn: testDsn, tunnel }, window.fetch);
+      fetch.returns(Promise.resolve({ status: 200, headers: new Headers() }));
+
+      await transport.sendEvent(eventPayload);
+
+      expect(fetch.calledWith(tunnel)).equal(true);
     });
 
     it('rejects with non-200 status code', async () => {
@@ -180,7 +190,9 @@ describe('FetchTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for event requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(fetch.calledOnce).equal(true);
         }
 
@@ -246,7 +258,9 @@ describe('FetchTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for event requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(fetch.calledTwice).equal(true);
         }
 
@@ -307,7 +321,9 @@ describe('FetchTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for event requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(fetch.calledOnce).equal(true);
         }
 
@@ -316,7 +332,9 @@ describe('FetchTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for transaction requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(fetch.calledOnce).equal(true);
         }
 
@@ -383,7 +401,9 @@ describe('FetchTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for event requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(fetch.calledOnce).equal(true);
         }
 
@@ -392,7 +412,9 @@ describe('FetchTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for transaction requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(fetch.calledOnce).equal(true);
         }
 
@@ -445,7 +467,9 @@ describe('FetchTransport', () => {
           throw new Error('unreachable!');
         } catch (res) {
           expect(res.status).equal(429);
-          expect(res.reason).equal(`Transport locked till ${new Date(afterLimit)} due to too many requests.`);
+          expect(res.reason).equal(
+            `Transport for event requests locked till ${new Date(afterLimit)} due to too many requests.`,
+          );
           expect(fetch.calledOnce).equal(true);
         }
 

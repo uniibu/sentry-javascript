@@ -1,4 +1,4 @@
-import { Event, SdkInfo, SentryRequest, Session } from '@sentry/types';
+import { Event, SdkInfo, SentryRequest, SentryRequestType, Session, SessionAggregates } from '@sentry/types';
 
 import { API } from './api';
 
@@ -19,11 +19,7 @@ function enhanceEventWithSdkInfo(event: Event, sdkInfo?: SdkInfo): Event {
   if (!sdkInfo) {
     return event;
   }
-
-  event.sdk = event.sdk || {
-    name: sdkInfo.name,
-    version: sdkInfo.version,
-  };
+  event.sdk = event.sdk || {};
   event.sdk.name = event.sdk.name || sdkInfo.name;
   event.sdk.version = event.sdk.version || sdkInfo.version;
   event.sdk.integrations = [...(event.sdk.integrations || []), ...(sdkInfo.integrations || [])];
@@ -32,19 +28,22 @@ function enhanceEventWithSdkInfo(event: Event, sdkInfo?: SdkInfo): Event {
 }
 
 /** Creates a SentryRequest from a Session. */
-export function sessionToSentryRequest(session: Session, api: API): SentryRequest {
+export function sessionToSentryRequest(session: Session | SessionAggregates, api: API): SentryRequest {
   const sdkInfo = getSdkMetadataForEnvelopeHeader(api);
   const envelopeHeaders = JSON.stringify({
     sent_at: new Date().toISOString(),
     ...(sdkInfo && { sdk: sdkInfo }),
+    ...(api.forceEnvelope() && { dsn: api.getDsn().toString() }),
   });
+  // I know this is hacky but we don't want to add `session` to request type since it's never rate limited
+  const type: SentryRequestType = 'aggregates' in session ? ('sessions' as SentryRequestType) : 'session';
   const itemHeaders = JSON.stringify({
-    type: 'session',
+    type,
   });
 
   return {
     body: `${envelopeHeaders}\n${itemHeaders}\n${JSON.stringify(session)}`,
-    type: 'session',
+    type,
     url: api.getEnvelopeEndpointWithUrlEncodedAuth(),
   };
 }
@@ -53,7 +52,7 @@ export function sessionToSentryRequest(session: Session, api: API): SentryReques
 export function eventToSentryRequest(event: Event, api: API): SentryRequest {
   const sdkInfo = getSdkMetadataForEnvelopeHeader(api);
   const eventType = event.type || 'event';
-  const useEnvelope = eventType === 'transaction';
+  const useEnvelope = eventType === 'transaction' || api.forceEnvelope();
 
   const { transactionSampling, ...metadata } = event.debug_meta || {};
   const { method: samplingMethod, rate: sampleRate } = transactionSampling || {};
@@ -80,9 +79,10 @@ export function eventToSentryRequest(event: Event, api: API): SentryRequest {
       event_id: event.event_id,
       sent_at: new Date().toISOString(),
       ...(sdkInfo && { sdk: sdkInfo }),
+      ...(api.forceEnvelope() && { dsn: api.getDsn().toString() }),
     });
     const itemHeaders = JSON.stringify({
-      type: event.type,
+      type: eventType,
 
       // TODO: Right now, sampleRate may or may not be defined (it won't be in the cases of inheritance and
       // explicitly-set sampling decisions). Are we good with that?

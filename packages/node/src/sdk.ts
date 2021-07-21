@@ -1,11 +1,12 @@
 import { getCurrentHub, initAndBind, Integrations as CoreIntegrations } from '@sentry/core';
 import { getMainCarrier, setHubOnCarrier } from '@sentry/hub';
+import { SessionStatus } from '@sentry/types';
 import { getGlobalObject } from '@sentry/utils';
 import * as domain from 'domain';
 
-import { NodeOptions } from './backend';
 import { NodeClient } from './client';
 import { Console, Http, LinkedErrors, OnUncaughtException, OnUnhandledRejection } from './integrations';
+import { NodeOptions } from './types';
 
 export const defaultIntegrations = [
   // Common
@@ -77,9 +78,16 @@ export const defaultIntegrations = [
  * @see {@link NodeOptions} for documentation on configuration options.
  */
 export function init(options: NodeOptions = {}): void {
-  if (options.defaultIntegrations === undefined) {
-    options.defaultIntegrations = defaultIntegrations;
-  }
+  const carrier = getMainCarrier();
+  const autoloadedIntegrations = carrier.__SENTRY__?.integrations || [];
+
+  options.defaultIntegrations =
+    options.defaultIntegrations === false
+      ? []
+      : [
+          ...(Array.isArray(options.defaultIntegrations) ? options.defaultIntegrations : defaultIntegrations),
+          ...autoloadedIntegrations,
+        ];
 
   if (options.dsn === undefined && process.env.SENTRY_DSN) {
     options.dsn = process.env.SENTRY_DSN;
@@ -96,6 +104,9 @@ export function init(options: NodeOptions = {}): void {
     const detectedRelease = getSentryRelease();
     if (detectedRelease !== undefined) {
       options.release = detectedRelease;
+    } else {
+      // If release is not provided, then we should disable autoSessionTracking
+      options.autoSessionTracking = false;
     }
   }
 
@@ -103,12 +114,20 @@ export function init(options: NodeOptions = {}): void {
     options.environment = process.env.SENTRY_ENVIRONMENT;
   }
 
+  if (options.autoSessionTracking === undefined) {
+    options.autoSessionTracking = true;
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any
   if ((domain as any).active) {
-    setHubOnCarrier(getMainCarrier(), getCurrentHub());
+    setHubOnCarrier(carrier, getCurrentHub());
   }
 
   initAndBind(NodeClient, options);
+
+  if (options.autoSessionTracking) {
+    startSessionTracking();
+  }
 }
 
 /**
@@ -149,9 +168,23 @@ export async function close(timeout?: number): Promise<boolean> {
 }
 
 /**
+ * Function that takes an instance of NodeClient and checks if autoSessionTracking option is enabled for that client
+ */
+export function isAutoSessionTrackingEnabled(client?: NodeClient): boolean {
+  if (client === undefined) {
+    return false;
+  }
+  const clientOptions: NodeOptions = client && client.getOptions();
+  if (clientOptions && clientOptions.autoSessionTracking !== undefined) {
+    return clientOptions.autoSessionTracking;
+  }
+  return false;
+}
+
+/**
  * Returns a release dynamically from environment variables.
  */
-export function getSentryRelease(): string | undefined {
+export function getSentryRelease(fallback?: string): string | undefined {
   // Always read first as Sentry takes this as precedence
   if (process.env.SENTRY_RELEASE) {
     return process.env.SENTRY_RELEASE;
@@ -176,6 +209,28 @@ export function getSentryRelease(): string | undefined {
     // Zeit (now known as Vercel)
     process.env.ZEIT_GITHUB_COMMIT_SHA ||
     process.env.ZEIT_GITLAB_COMMIT_SHA ||
-    process.env.ZEIT_BITBUCKET_COMMIT_SHA
+    process.env.ZEIT_BITBUCKET_COMMIT_SHA ||
+    fallback
   );
+}
+
+/**
+ * Enable automatic Session Tracking for the node process.
+ */
+function startSessionTracking(): void {
+  const hub = getCurrentHub();
+  hub.startSession();
+  // Emitted in the case of healthy sessions, error of `mechanism.handled: true` and unhandledrejections because
+  // The 'beforeExit' event is not emitted for conditions causing explicit termination,
+  // such as calling process.exit() or uncaught exceptions.
+  // Ref: https://nodejs.org/api/process.html#process_event_beforeexit
+  process.on('beforeExit', () => {
+    const session = hub.getScope()?.getSession();
+    const terminalStates = [SessionStatus.Exited, SessionStatus.Crashed];
+    // Only call endSession, if the Session exists on Scope and SessionStatus is not a
+    // Terminal Status i.e. Exited or Crashed because
+    // "When a session is moved away from ok it must not be updated anymore."
+    // Ref: https://develop.sentry.dev/sdk/sessions/
+    if (session && !terminalStates.includes(session.status)) hub.endSession();
+  });
 }
