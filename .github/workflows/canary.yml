@@ -1,0 +1,131 @@
+name: 'CI: Canary Tests'
+on:
+  schedule:
+    # Run every day at midnight
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: If the commit you want to test isn't the head of a branch, provide its SHA here
+        required: false
+
+env:
+  HEAD_COMMIT: ${{ github.event.inputs.commit || github.sha }}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  job_e2e_prepare:
+    name: Prepare E2E Canary tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Check out current commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.HEAD_COMMIT }}
+      - name: Install pnpm
+        uses: ./.github/actions/install-pnpm
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: 'package.json'
+      - name: Install dependencies
+        run: pnpm install
+      - name: Build packages
+        run: pnpm run build
+
+      - name: Build tarballs
+        run: pnpm run build:tarball
+
+      # Same artifacts as in build.yml, so the test jobs can use the shared prepare-e2e-test action
+      - name: Upload tarball artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-tarball-output
+          path: packages/*/*.tgz
+          if-no-files-found: error
+          retention-days: 4
+          compression-level: 6
+          overwrite: true
+
+      - name: Upload test-utils tarball artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-test-utils-tarball-output
+          path: dev-packages/test-utils/*.tgz
+          if-no-files-found: error
+          retention-days: 4
+          compression-level: 6
+          overwrite: true
+
+      - name: Determine canary test applications
+        id: matrix
+        run: pnpm --silent run ci:build-matrix-canary >> $GITHUB_OUTPUT
+        working-directory: dev-packages/e2e-tests
+
+  job_e2e_tests:
+    name: E2E ${{ matrix.label || matrix.test-application }} Test
+    needs: [job_e2e_prepare]
+    if: needs.job_e2e_prepare.outputs.matrix != '{"include":[]}'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # We just use a dummy DSN here, only send to the tunnel anyhow
+      E2E_TEST_DSN: 'https://username@domain/123'
+      # Needed because some apps expect a certain prefix
+      NEXT_PUBLIC_E2E_TEST_DSN: 'https://username@domain/123'
+      PUBLIC_E2E_TEST_DSN: 'https://username@domain/123'
+      REACT_APP_E2E_TEST_DSN: 'https://username@domain/123'
+      E2E_TEST_SENTRY_ORG_SLUG: 'sentry-javascript-sdks'
+      E2E_TEST_SENTRY_PROJECT: 'sentry-javascript-e2e-tests'
+      # The `runtime` of a runtime variant, see dev-packages/e2e-tests/README.md
+      RUNTIME: ${{ matrix.runtime }}
+      # Without the root node_modules, `pnpm run` would first install the whole workspace.
+      pnpm_config_verify_deps_before_run: 'false'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.job_e2e_prepare.outputs.matrix) }}
+
+    steps:
+      - name: Check out current commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.HEAD_COMMIT }}
+      - name: Prepare E2E test application
+        uses: ./.github/actions/prepare-e2e-test
+        with:
+          test-application: ${{ matrix.test-application }}
+          runtime: ${{ matrix.runtime }}
+          deno-version: ${{ matrix.deno-version }}
+
+      - name: Build E2E app
+        working-directory: ${{ runner.temp }}/test-application
+        timeout-minutes: 7
+        run: ${{ matrix.build-command || 'pnpm test:build' }}
+
+      - name: Install Playwright
+        uses: ./.github/actions/install-playwright
+        with:
+          browsers: chromium
+          cwd: ${{ runner.temp }}/test-application
+
+      - name: Run E2E test
+        working-directory: ${{ runner.temp }}/test-application
+        timeout-minutes: 15
+        run: ${{ matrix.assert-command || 'pnpm test:assert' }}
+
+      - name: Create Issue
+        if: failure() && github.event_name == 'schedule'
+        uses: JasonEtco/create-an-issue@1b14a70e4d8dc185e5cc76d3bec9eab20257b2c5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_LINK: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TITLE: ${{ matrix.label || matrix.test-application }} Test Failed
+        with:
+          filename: .github/CANARY_FAILURE_TEMPLATE.md
+          update_existing: true

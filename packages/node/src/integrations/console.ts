@@ -1,71 +1,143 @@
-import { getCurrentHub } from '@sentry/core';
-import { Integration, Severity } from '@sentry/types';
-import { fill } from '@sentry/utils';
-import * as util from 'util';
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type { ConsoleLevel, WrappedFunction } from '@sentry/core';
+import {
+  CONSOLE_LEVELS,
+  GLOBAL_OBJ,
+  consoleIntegration as coreConsoleIntegration,
+  defineIntegration,
+  fill,
+  markFunctionWrapped,
+  maybeInstrument,
+  originalConsoleMethods,
+  triggerHandlers,
+} from '@sentry/core';
 
-/** Console module integration */
-export class Console implements Integration {
+interface ConsoleIntegrationOptions {
+  levels: ConsoleLevel[];
   /**
-   * @inheritDoc
+   * Filter out console messages that match the given strings or regular expressions.
+   * These will neither be passed to the handler, and they will also not be logged to the user, unless they have debug enabled.
    */
-  public static id: string = 'Console';
-
-  /**
-   * @inheritDoc
-   */
-  public name: string = Console.id;
-
-  /**
-   * @inheritDoc
-   */
-  public setupOnce(): void {
-    const consoleModule = require('console');
-    for (const level of ['debug', 'info', 'warn', 'error', 'log']) {
-      fill(consoleModule, level, createConsoleWrapper(level));
-    }
-  }
+  filter?: (string | RegExp)[];
 }
 
 /**
- * Wrapper function that'll be used for every console level
+ * Node-specific console integration that captures breadcrumbs and handles
+ * the AWS Lambda runtime replacing console methods after our patch.
+ *
+ * In Lambda, console methods are patched via `Object.defineProperty` so that
+ * external replacements (by the Lambda runtime) are absorbed as the delegate
+ * while our wrapper stays in place. Outside Lambda, this delegates entirely
+ * to the core `consoleIntegration` which uses the simpler `fill`-based patch.
  */
-function createConsoleWrapper(level: string): (originalConsoleMethod: () => void) => void {
-  return function consoleWrapper(originalConsoleMethod: () => void): () => void {
-    let sentryLevel: Severity;
-
-    switch (level) {
-      case 'debug':
-        sentryLevel = Severity.Debug;
-        break;
-      case 'error':
-        sentryLevel = Severity.Error;
-        break;
-      case 'info':
-        sentryLevel = Severity.Info;
-        break;
-      case 'warn':
-        sentryLevel = Severity.Warning;
-        break;
-      default:
-        sentryLevel = Severity.Log;
-    }
-
-    return function(this: typeof console): void {
-      if (getCurrentHub().getIntegration(Console)) {
-        getCurrentHub().addBreadcrumb(
-          {
-            category: 'console',
-            level: sentryLevel,
-            message: util.format.apply(undefined, arguments),
-          },
-          {
-            input: [...arguments],
-            level,
-          },
-        );
+export const consoleIntegration = defineIntegration((options: Partial<ConsoleIntegrationOptions> = {}) => {
+  return {
+    name: 'Console' as const,
+    setup(client) {
+      if (process.env.LAMBDA_TASK_ROOT) {
+        maybeInstrument('console', instrumentConsoleLambda);
       }
 
-      originalConsoleMethod.apply(this, arguments);
-    };
+      // Delegate breadcrumb handling to the core console integration.
+      const core = coreConsoleIntegration({
+        ...options,
+        filter: [
+          ...(options.filter || []),
+          // Deprecation on Node 26 for module.require(), which is used by IITM
+          '[DEP0205] DeprecationWarning',
+        ],
+      });
+      core.setup?.(client);
+    },
   };
+});
+
+/**
+ * NOTE: This currently ignores the filter option.
+ * We can revisit this later.
+ */
+function instrumentConsoleLambda(): void {
+  const consoleObj = GLOBAL_OBJ?.console;
+  if (!consoleObj) {
+    return;
+  }
+
+  CONSOLE_LEVELS.forEach((level: ConsoleLevel) => {
+    if (level in consoleObj) {
+      patchWithDefineProperty(consoleObj, level);
+    }
+  });
+}
+
+function patchWithDefineProperty(consoleObj: Console, level: ConsoleLevel): void {
+  const nativeMethod = consoleObj[level] as (...args: unknown[]) => void;
+  originalConsoleMethods[level] = nativeMethod;
+
+  let delegate: Function = nativeMethod;
+  let savedDelegate: Function | undefined;
+  let isExecuting = false;
+
+  const wrapper = function (...args: any[]): void {
+    if (isExecuting) {
+      // Re-entrant call: a third party captured `wrapper` via the getter and calls it from inside their replacement. We must
+      // use `nativeMethod` (not `delegate`) to break the cycle, and we intentionally skip `triggerHandlers` to avoid duplicate
+      // breadcrumbs. The outer invocation already triggered the handlers for this console call.
+      nativeMethod.apply(consoleObj, args);
+      return;
+    }
+    isExecuting = true;
+    try {
+      triggerHandlers('console', { args, level });
+      delegate.apply(consoleObj, args);
+    } finally {
+      isExecuting = false;
+    }
+  };
+  markFunctionWrapped(wrapper, nativeMethod);
+
+  // consoleSandbox reads originalConsoleMethods[level] to temporarily bypass instrumentation. We replace it with a distinct reference (.bind creates a
+  // new function identity) so the setter can tell apart "consoleSandbox bypass" from "external code restoring a native method captured before Sentry init."
+  const sandboxBypass = nativeMethod.bind(consoleObj);
+  originalConsoleMethods[level] = sandboxBypass;
+
+  try {
+    let current: any = wrapper;
+
+    Object.defineProperty(consoleObj, level, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return current;
+      },
+      set(newValue) {
+        if (newValue === wrapper) {
+          // consoleSandbox restoring the wrapper: recover the saved delegate.
+          if (savedDelegate !== undefined) {
+            delegate = savedDelegate;
+            savedDelegate = undefined;
+          }
+          current = wrapper;
+        } else if (newValue === sandboxBypass) {
+          // consoleSandbox entering bypass: save delegate, let getter return sandboxBypass directly so calls skip the wrapper entirely.
+          savedDelegate = delegate;
+          current = sandboxBypass;
+        } else if (typeof newValue === 'function' && !(newValue as WrappedFunction).__sentry_original__) {
+          delegate = newValue;
+          current = wrapper;
+        } else {
+          current = newValue;
+        }
+      },
+    });
+  } catch {
+    // Fall back to fill-based patching if defineProperty fails
+    fill(consoleObj, level, function (originalConsoleMethod: () => any): Function {
+      originalConsoleMethods[level] = originalConsoleMethod;
+
+      return function (this: Console, ...args: any[]): void {
+        triggerHandlers('console', { args, level });
+        originalConsoleMethods[level]?.apply(this, args);
+      };
+    });
+  }
 }

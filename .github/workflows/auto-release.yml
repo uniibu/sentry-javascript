@@ -1,0 +1,68 @@
+name: 'Gitflow: Auto prepare release'
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - master
+
+# This workflow triggers a release when merging a branch with the pattern `prepare-release/VERSION` into master.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    name: 'Prepare a new version'
+
+    steps:
+      - name: Get auth token
+        id: token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ vars.SENTRY_RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.SENTRY_RELEASE_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.token.outputs.token }}
+          fetch-depth: 0
+
+      # https://github.com/actions-ecosystem/action-regex-match
+      - uses: actions-ecosystem/action-regex-match@v2
+        id: version-regex
+        with:
+          # Parse version from head branch
+          text: ${{ github.head_ref }}
+          # match: preprare-release/xx.xx.xx
+          regex: '^prepare-release\/(\d+\.\d+\.\d+)(?:-(alpha|beta|rc)\.\d+)?$'
+
+      - name: Extract version
+        id: get_version
+        run: |
+          version=${{ steps.version-regex.outputs.match }}
+          version=${version/'prepare-release/'/''}
+          echo "version=$version" >> $GITHUB_OUTPUT
+
+      # scripts/craft-pre-release.sh installs dependencies with pnpm.
+      - name: Install pnpm
+        uses: ./.github/actions/install-pnpm
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: 'package.json'
+
+      - name: Prepare release
+        uses: getsentry/craft@3f1f02d50b08b8c509a28d2cc2abf594e9a28011 # v3.5.0
+        if:
+          github.event.pull_request.merged == true && steps.version-regex.outputs.match != '' &&
+          steps.get_version.outputs.version != ''
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+        with:
+          version: ${{ steps.get_version.outputs.version }}
+          force: false
+          merge_target: master
+          craft_config_from_merge_target: true

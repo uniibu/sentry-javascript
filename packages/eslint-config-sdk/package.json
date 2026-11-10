@@ -1,6 +1,6 @@
 {
-  "name": "@sentry-internal/eslint-config-sdk",
-  "version": "6.3.0",
+  "name": "@sentry/eslint-config-sdk",
+  "version": "11.12.0",
   "description": "Official Sentry SDK eslint config",
   "repository": "git://github.com/getsentry/sentry-javascript.git",
   "homepage": "https://github.com/getsentry/sentry-javascript/tree/master/packages/eslint-config-sdk",
@@ -12,37 +12,35 @@
     "sentry"
   ],
   "engines": {
-    "node": ">=6"
+    "node": ">=20.19.0 <22.0.0 || >=22.12.0 <23.0.0 || >=23.2.0"
   },
+  "files": [
+    "/src"
+  ],
   "main": "src/index.js",
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
-    "@sentry-internal/eslint-plugin-sdk": "6.3.0",
-    "@sentry-internal/typescript": "6.3.0",
-    "@typescript-eslint/eslint-plugin": "^3.9.0",
-    "@typescript-eslint/parser": "^3.9.0",
-    "eslint-config-prettier": "^6.11.0",
-    "eslint-plugin-deprecation": "^1.1.0",
-    "eslint-plugin-import": "^2.22.0",
-    "eslint-plugin-jsdoc": "^30.0.3",
-    "eslint-plugin-simple-import-sort": "^5.0.3"
+    "@sentry/eslint-plugin-sdk": "11.12.0",
+    "@sentry/typescript": "11.12.0",
+    "@typescript-eslint/eslint-plugin": "^5.62.0",
+    "@typescript-eslint/parser": "^5.62.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-deprecation": "^3.0.0",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-jsdoc": "^50.6.1",
+    "eslint-plugin-simple-import-sort": "^14.0.0"
   },
   "peerDependencies": {
     "eslint": ">=5"
   },
   "devDependencies": {
-    "eslint": "7.6.0",
-    "typescript": "3.7.5"
+    "eslint": "8.57.0"
   },
   "scripts": {
-    "link:yarn": "yarn link",
-    "lint": "prettier --check \"**/*.js\"",
-    "fix": "prettier --write \"**/*.js\"",
-    "pack": "npm pack"
-  },
-  "volta": {
-    "extends": "../../package.json"
+    "clean": "node ../../scripts/rm.mjs sentry-eslint-config-sdk-*.tgz",
+    "build:tarball": "pnpm pack",
+    "circularDepCheck": "madge --circular src/index.js"
   }
 }

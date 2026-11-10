@@ -1,54 +1,45 @@
 <p align="center">
-  <a href="https://sentry.io" target="_blank" align="center">
-    <img src="https://sentry-brand.storage.googleapis.com/sentry-logo-black.png" width="280">
+  <a href="https://sentry.io/?utm_source=github&utm_medium=logo" target="_blank">
+    <picture>
+      <source srcset="https://sentry-brand.storage.googleapis.com/sentry-logo-white.png" media="(prefers-color-scheme: dark)" />
+      <source srcset="https://sentry-brand.storage.googleapis.com/sentry-wordmark-dark-280x84.png" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)" />
+      <img src="https://sentry-brand.storage.googleapis.com/sentry-wordmark-dark-280x84.png" alt="Sentry" width="280">
+    </picture>
   </a>
-  <br />
 </p>
 
 # Sentry TypeScript Configuration
 
-[![npm version](https://img.shields.io/npm/v/@sentry-internal/typescript.svg)](https://www.npmjs.com/package/@sentry-internal/typescript)
-[![npm dm](https://img.shields.io/npm/dm/@sentry-internal/typescript.svg)](https://www.npmjs.com/package/@sentry-internal/typescript)
-[![npm dt](https://img.shields.io/npm/dt/@sentry-internal/typescript.svg)](https://www.npmjs.com/package/@sentry-internal/typescript)
-
-[![typedoc](https://img.shields.io/badge/docs-typedoc-blue.svg)](http://getsentry.github.io/sentry-javascript/)
-
-## Links
-
-- [Official SDK Docs](https://docs.sentry.io/quickstart/)
-- [TypeDoc](http://getsentry.github.io/sentry-javascript/)
-
-## General
+[![npm version](https://img.shields.io/npm/v/@sentry/typescript.svg)](https://www.npmjs.com/package/@sentry/typescript)
+[![npm dm](https://img.shields.io/npm/dm/@sentry/typescript.svg)](https://www.npmjs.com/package/@sentry/typescript)
+[![npm dt](https://img.shields.io/npm/dt/@sentry/typescript.svg)](https://www.npmjs.com/package/@sentry/typescript)
 
 Shared typescript configuration used at Sentry.
+
+> [!NOTE]
+> This package is an internal library published for use by Sentry-owned JavaScript SDK packages and repositories. It is
+> not part of the public API contract and may change in any release. Do not rely on SemVer compatibility if you depend on
+> it directly.
 
 ## Installation
 
 ```sh
 # With Yarn:
-yarn add --dev @sentry-internal/typescript
+yarn add --dev @sentry/typescript
 
 # With NPM:
-npm install --save-dev @sentry-internal/typescript
+npm install --save-dev @sentry/typescript
 ```
 
 ## Usage
 
 Add the following config files to your project's root directory:
 
-**tslint.json**:
-
-```json
-{
-  "extends": "@sentry-internal/typescript/tslint"
-}
-```
-
 **tsconfig.json**:
 
 ```json
 {
-  "extends": "./node_modules/@sentry-internal/typescript/tsconfig.json",
+  "extends": "./node_modules/@sentry/typescript/tsconfig.json",
   "compilerOptions": {
     "baseUrl": ".",
     "rootDir": "src",
@@ -56,3 +47,11 @@ Add the following config files to your project's root directory:
   }
 }
 ```
+
+For an example of how to use this package in a monorepo, check out this package's own parent repo,
+https://github.com/getsentry/sentry-javascript.
+
+## Support
+
+- [Report a bug](https://github.com/getsentry/sentry-javascript/issues/new/choose)
+- [Contributing](https://github.com/getsentry/sentry-javascript/blob/develop/CONTRIBUTING.md)

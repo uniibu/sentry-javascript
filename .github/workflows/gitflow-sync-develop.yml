@@ -1,0 +1,59 @@
+name: 'Gitflow: Sync master into develop'
+on:
+  push:
+    branches:
+      - master
+    paths:
+      # When versions are bumped on master (written by scripts/bump-version.js)
+      - '.version.json'
+      - '!**/*.js'
+      - '!**/*.ts'
+  workflow_dispatch:
+
+env:
+  SOURCE_BRANCH: master
+  TARGET_BRANCH: develop
+
+jobs:
+  main:
+    name: Create PR master->develop
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: write
+      contents: write
+    steps:
+      - name: git checkout
+        uses: actions/checkout@v7
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GITFLOW_APP_ID }}
+          private-key: ${{ secrets.GITFLOW_APP_PRIVATE_KEY }}
+
+      # https://github.com/marketplace/actions/github-pull-request-action
+      - name: Create Pull Request
+        id: open-pr
+        uses: repo-sync/pull-request@v2
+        with:
+          source_branch: ${{ env.SOURCE_BRANCH }}
+          destination_branch: ${{ env.TARGET_BRANCH }}
+          pr_title: '[Gitflow] Merge ${{ env.SOURCE_BRANCH }} into ${{ env.TARGET_BRANCH }}'
+          pr_body: 'Merge ${{ env.SOURCE_BRANCH }} branch into ${{ env.TARGET_BRANCH }}'
+          pr_label: 'Dev: Gitflow'
+          github_token: ${{ steps.app-token.outputs.token }}
+
+      - name: Enable automerge for PR
+        if: steps.open-pr.outputs.pr_number != ''
+        run: gh pr merge --merge --auto "${{ steps.open-pr.outputs.pr_number }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # https://github.com/marketplace/actions/auto-approve
+      - name: Auto approve PR
+        if: steps.open-pr.outputs.pr_number != ''
+        uses: hmarr/auto-approve-action@v4
+        with:
+          pull-request-number: ${{ steps.open-pr.outputs.pr_number }}
+          review-message: 'Auto approved automated PR'

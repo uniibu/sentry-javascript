@@ -1,22 +1,35 @@
-import { BrowserOptions, init as browserInit, SDK_VERSION } from '@sentry/browser';
+import type { BrowserOptions } from '@sentry/browser';
+import {
+  init as browserInit,
+  normalizeStringifyValue as browserNormalizeStringifyValue,
+  setContext,
+} from '@sentry/browser';
+import type { Client } from '@sentry/core';
+import { applySdkMetadata, setNormalizeStringifier } from '@sentry/core';
+import { version } from 'react';
+import { isSyntheticEvent } from './isSyntheticEvent';
 
 /**
  * Inits the React SDK
  */
-export function init(options: BrowserOptions): void {
-  options._metadata = options._metadata || {};
-  if (options._metadata.sdk === undefined) {
-    options._metadata.sdk = {
-      name: 'sentry.javascript.react',
-      packages: [
-        {
-          name: 'npm:@sentry/react',
-          version: SDK_VERSION,
-        },
-      ],
-      version: SDK_VERSION,
-    };
-  }
+export function init(options: BrowserOptions): Client | undefined {
+  const opts = {
+    ...options,
+  };
 
-  browserInit(options);
+  applySdkMetadata(opts, 'react');
+  setContext('react', { version });
+  const client = browserInit(opts);
+
+  // Add react-specific stringification
+  setNormalizeStringifier(normalizeStringifyValue);
+
+  return client;
+}
+
+function normalizeStringifyValue(value: Exclude<unknown, string | number | boolean | null>): string | undefined {
+  if (isSyntheticEvent(value)) {
+    return '[SyntheticEvent]';
+  }
+  return browserNormalizeStringifyValue(value);
 }

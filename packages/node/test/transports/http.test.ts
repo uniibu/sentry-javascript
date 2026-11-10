@@ -1,218 +1,541 @@
-import { TransportOptions } from '@sentry/types';
-import { SentryError } from '@sentry/utils';
+import type { EventEnvelope, EventItem } from '@sentry/core';
+import {
+  addItemToEnvelope,
+  createAttachmentEnvelopeItem,
+  createEnvelope,
+  createTransport,
+  serializeEnvelope,
+} from '@sentry/core';
+import { EventEmitter } from 'node:events';
 import * as http from 'http';
-import * as HttpsProxyAgent from 'https-proxy-agent';
+import type { ClientRequest } from 'node:http';
+import * as nodeHttp from 'node:http';
+import { Writable } from 'node:stream';
+import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
+import { createGunzip } from 'zlib';
+import * as httpProxyAgent from '../../src/proxy';
+import { makeNodeTransport } from '../../src/transports';
+import type { HTTPModule, HTTPModuleRequestIncomingMessage } from '../../src/transports/http-module';
 
-import { HTTPTransport } from '../../src/transports/http';
-
-const mockSetEncoding = jest.fn();
-const dsn = 'http://9e9fd4523d784609a5fc0ebb1080592f@sentry.io:8989/mysubpath/50622';
-const transportPath = '/mysubpath/api/50622/store/';
-let mockReturnCode = 200;
-let mockHeaders = {};
-
-function createTransport(options: TransportOptions): HTTPTransport {
-  const transport = new HTTPTransport(options);
-  transport.module = {
-    request: jest.fn().mockImplementation((_options: any, callback: any) => ({
-      end: () => {
-        callback({
-          headers: mockHeaders,
-          setEncoding: mockSetEncoding,
-          statusCode: mockReturnCode,
-        });
-      },
-      on: jest.fn(),
-    })),
+vi.mock('@sentry/core', async () => {
+  const actualCore = await vi.importActual('@sentry/core');
+  return {
+    ...actualCore,
+    createTransport: vi.fn().mockImplementation(actualCore.createTransport),
   };
-  return transport;
+});
+
+vi.mock('node:http', async () => {
+  const original = await vi.importActual('node:http');
+  return {
+    ...original,
+    request: original.request,
+  };
+});
+
+const SUCCESS = 200;
+const RATE_LIMIT = 429;
+const INVALID = 400;
+const FAILED = 500;
+
+interface TestServerOptions {
+  statusCode: number;
+  responseHeaders?: Record<string, string | string[] | undefined>;
 }
 
-function assertBasicOptions(options: any): void {
-  expect(options.headers['X-Sentry-Auth']).toContain('sentry_version');
-  expect(options.headers['X-Sentry-Auth']).toContain('sentry_client');
-  expect(options.headers['X-Sentry-Auth']).toContain('sentry_key');
-  expect(options.port).toEqual('8989');
-  expect(options.path).toEqual(transportPath);
-  expect(options.hostname).toEqual('sentry.io');
-}
+let testServer: http.Server | undefined;
 
-describe('HTTPTransport', () => {
-  beforeEach(() => {
-    mockReturnCode = 200;
-    mockHeaders = {};
-    jest.clearAllMocks();
-  });
+function setupTestServer(
+  options: TestServerOptions,
+  requestInspector?: (req: http.IncomingMessage, body: string, raw: Uint8Array) => void,
+) {
+  testServer = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
 
-  test('send 200', async () => {
-    const transport = createTransport({ dsn });
-    await transport.sendEvent({
-      message: 'test',
+    const stream = req.headers['content-encoding'] === 'gzip' ? req.pipe(createGunzip({})) : req;
+
+    stream.on('data', data => {
+      chunks.push(data);
     });
 
-    const requestOptions = (transport.module!.request as jest.Mock).mock.calls[0][0];
-    assertBasicOptions(requestOptions);
-    expect(mockSetEncoding).toHaveBeenCalled();
+    stream.on('end', () => {
+      requestInspector?.(req, chunks.join(), Buffer.concat(chunks));
+    });
+
+    res.writeHead(options.statusCode, options.responseHeaders);
+    res.end();
+
+    // also terminate socket because keepalive hangs connection a bit
+    // eslint-disable-next-line typescript/no-deprecated
+    res.connection?.end();
   });
 
-  test('send 400', async () => {
-    mockReturnCode = 400;
-    const transport = createTransport({ dsn });
+  testServer.listen(18101);
 
-    try {
-      await transport.sendEvent({
-        message: 'test',
-      });
-    } catch (e) {
-      const requestOptions = (transport.module!.request as jest.Mock).mock.calls[0][0];
-      assertBasicOptions(requestOptions);
-      expect(e).toEqual(new SentryError(`HTTP Error (${mockReturnCode})`));
-    }
+  return new Promise(resolve => {
+    testServer?.on('listening', resolve);
   });
+}
 
-  test('send x-sentry-error header', async () => {
-    mockReturnCode = 429;
-    mockHeaders = {
-      'x-sentry-error': 'test-failed',
-    };
-    const transport = createTransport({ dsn });
+const TEST_SERVER_URL = 'http://localhost:18101';
 
-    try {
-      await transport.sendEvent({
-        message: 'test',
-      });
-    } catch (e) {
-      const requestOptions = (transport.module!.request as jest.Mock).mock.calls[0][0];
-      assertBasicOptions(requestOptions);
-      expect(e).toEqual(new SentryError(`HTTP Error (${mockReturnCode}): test-failed`));
-    }
-  });
+const EVENT_ENVELOPE = createEnvelope<EventEnvelope>({ event_id: 'aa3ff046696b4bc6b609ce6d28fde9e2', sent_at: '123' }, [
+  [{ type: 'event' }, { event_id: 'aa3ff046696b4bc6b609ce6d28fde9e2' }] as EventItem,
+]);
 
-  test('back-off using retry-after header', async () => {
-    const retryAfterSeconds = 10;
-    mockReturnCode = 429;
-    mockHeaders = {
-      'retry-after': retryAfterSeconds,
-    };
-    const transport = createTransport({ dsn });
+const SERIALIZED_EVENT_ENVELOPE = serializeEnvelope(EVENT_ENVELOPE);
 
-    const now = Date.now();
-    const mock = jest
-      .spyOn(Date, 'now')
-      // Check for first event
-      .mockReturnValueOnce(now)
-      // Setting disabledUntil
-      .mockReturnValueOnce(now)
-      // Check for second event
-      .mockReturnValueOnce(now + (retryAfterSeconds / 2) * 1000)
-      // Check for third event
-      .mockReturnValueOnce(now + retryAfterSeconds * 1000);
+const ATTACHMENT_ITEM = createAttachmentEnvelopeItem({ filename: 'empty-file.bin', data: new Uint8Array(50_000) });
+const EVENT_ATTACHMENT_ENVELOPE = addItemToEnvelope(EVENT_ENVELOPE, ATTACHMENT_ITEM);
+const SERIALIZED_EVENT_ATTACHMENT_ENVELOPE = serializeEnvelope(EVENT_ATTACHMENT_ENVELOPE) as Uint8Array;
 
-    try {
-      await transport.sendEvent({ message: 'test' });
-    } catch (e) {
-      expect(e).toEqual(new SentryError(`HTTP Error (${mockReturnCode})`));
-    }
+const defaultOptions = {
+  url: TEST_SERVER_URL,
+  recordDroppedEvent: () => undefined,
+};
 
-    try {
-      await transport.sendEvent({ message: 'test' });
-    } catch (e) {
-      expect(e).toEqual(
-        new SentryError(`Transport locked till ${new Date(now + retryAfterSeconds * 1000)} due to too many requests.`),
-      );
-    }
+interface MockHttpRequestBehavior {
+  reusedSocket?: boolean;
+  errorCode?: string;
+  statusCode?: number;
+}
 
-    try {
-      await transport.sendEvent({ message: 'test' });
-    } catch (e) {
-      expect(e).toEqual(new SentryError(`HTTP Error (${mockReturnCode})`));
-    }
+function createMockHttpModule(behaviors: MockHttpRequestBehavior[]): {
+  httpModule: HTTPModule;
+  getRequestCount: () => number;
+} {
+  let requestCount = 0;
 
-    mock.mockRestore();
-  });
+  return {
+    getRequestCount: () => requestCount,
+    httpModule: {
+      request(_options, callback) {
+        const behavior = behaviors[requestCount] ?? {};
+        requestCount += 1;
 
-  test('transport options', async () => {
-    mockReturnCode = 200;
-    const transport = createTransport({
-      dsn,
-      headers: {
-        a: 'b',
+        const req = new Writable({
+          write(_chunk, _encoding, cb) {
+            cb();
+          },
+        });
+        Object.defineProperty(req, 'reusedSocket', { value: behavior.reusedSocket ?? false });
+
+        queueMicrotask(() => {
+          if (behavior.errorCode) {
+            req.emit('error', Object.assign(new Error(behavior.errorCode), { code: behavior.errorCode }));
+            return;
+          }
+
+          const res = new EventEmitter() as EventEmitter & HTTPModuleRequestIncomingMessage;
+          res.headers = {};
+          res.statusCode = behavior.statusCode ?? SUCCESS;
+          res.setEncoding = () => undefined;
+          callback?.(res);
+          res.emit('end');
+        });
+
+        return req as unknown as ClientRequest;
       },
-    });
-    await transport.sendEvent({
-      message: 'test',
+    },
+  };
+}
+
+// empty function to keep test output clean
+const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+afterEach(
+  () =>
+    new Promise<void>(done => {
+      vi.clearAllMocks();
+
+      if (testServer?.listening) {
+        testServer.close(() => done());
+      } else {
+        done();
+      }
+    }),
+);
+
+describe('makeNewHttpTransport()', () => {
+  describe('.send()', () => {
+    it('should correctly send envelope to server', async () => {
+      await setupTestServer({ statusCode: SUCCESS }, (req, body) => {
+        expect(req.method).toBe('POST');
+        expect(body).toBe(SERIALIZED_EVENT_ENVELOPE);
+      });
+
+      const transport = makeNodeTransport(defaultOptions);
+      await transport.send(EVENT_ENVELOPE);
     });
 
-    const requestOptions = (transport.module!.request as jest.Mock).mock.calls[0][0];
-    assertBasicOptions(requestOptions);
-    expect(requestOptions.headers).toEqual(expect.objectContaining({ a: 'b' }));
+    it('uses keepAlive by default', async () => {
+      await setupTestServer({ statusCode: SUCCESS }, req => {
+        expect(req.headers).toEqual(
+          expect.objectContaining({
+            // node http module lower-cases incoming headers
+            connection: 'keep-alive',
+          }),
+        );
+      });
+
+      const transport = makeNodeTransport(defaultOptions);
+      await transport.send(EVENT_ENVELOPE);
+    });
+
+    it('allows disabling keepAlive', () => {
+      const AgentSpy = vi.spyOn(nodeHttp, 'Agent');
+
+      try {
+        makeNodeTransport({ keepAlive: false, ...defaultOptions });
+
+        expect(AgentSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ keepAlive: false, maxSockets: 30, timeout: 2000 }),
+        );
+      } finally {
+        AgentSpy.mockRestore();
+      }
+    });
+
+    it('retries once when a reused keepAlive socket resets with ECONNRESET', async () => {
+      const { httpModule, getRequestCount } = createMockHttpModule([
+        { reusedSocket: true, errorCode: 'ECONNRESET' },
+        { statusCode: SUCCESS },
+      ]);
+
+      const transport = makeNodeTransport({ ...defaultOptions, httpModule });
+
+      await expect(transport.send(EVENT_ENVELOPE)).resolves.toEqual({
+        statusCode: SUCCESS,
+        headers: {
+          'retry-after': null,
+          'x-sentry-rate-limits': null,
+        },
+      });
+      expect(getRequestCount()).toBe(2);
+    });
+
+    it('rejects if the retry also fails with ECONNRESET', async () => {
+      const { httpModule, getRequestCount } = createMockHttpModule([
+        { reusedSocket: true, errorCode: 'ECONNRESET' },
+        { reusedSocket: true, errorCode: 'ECONNRESET' },
+      ]);
+
+      const transport = makeNodeTransport({ ...defaultOptions, httpModule });
+
+      await expect(transport.send(EVENT_ENVELOPE)).rejects.toHaveProperty('code', 'ECONNRESET');
+      expect(getRequestCount()).toBe(2);
+    });
+
+    it('does not retry ECONNRESET when the socket was not reused', async () => {
+      const { httpModule, getRequestCount } = createMockHttpModule([{ reusedSocket: false, errorCode: 'ECONNRESET' }]);
+
+      const transport = makeNodeTransport({ ...defaultOptions, httpModule });
+
+      await expect(transport.send(EVENT_ENVELOPE)).rejects.toHaveProperty('code', 'ECONNRESET');
+      expect(getRequestCount()).toBe(1);
+    });
+
+    it('does not retry a reused socket on a non-ECONNRESET error', async () => {
+      const { httpModule, getRequestCount } = createMockHttpModule([{ reusedSocket: true, errorCode: 'ECONNREFUSED' }]);
+
+      const transport = makeNodeTransport({ ...defaultOptions, httpModule });
+
+      await expect(transport.send(EVENT_ENVELOPE)).rejects.toHaveProperty('code', 'ECONNREFUSED');
+      expect(getRequestCount()).toBe(1);
+    });
+
+    it('should correctly send user-provided headers to server', async () => {
+      await setupTestServer({ statusCode: SUCCESS }, req => {
+        expect(req.headers).toEqual(
+          expect.objectContaining({
+            // node http module lower-cases incoming headers
+            'x-some-custom-header-1': 'value1',
+            'x-some-custom-header-2': 'value2',
+          }),
+        );
+      });
+
+      const transport = makeNodeTransport({
+        ...defaultOptions,
+        headers: {
+          'X-Some-Custom-Header-1': 'value1',
+          'X-Some-Custom-Header-2': 'value2',
+        },
+      });
+
+      await transport.send(EVENT_ENVELOPE);
+    });
+
+    it.each([RATE_LIMIT, INVALID, FAILED])(
+      'should resolve on bad server response (status %i)',
+      async serverStatusCode => {
+        await setupTestServer({ statusCode: serverStatusCode });
+
+        const transport = makeNodeTransport(defaultOptions);
+
+        await expect(transport.send(EVENT_ENVELOPE)).resolves.toEqual(
+          expect.objectContaining({ statusCode: serverStatusCode }),
+        );
+      },
+    );
+
+    it('should resolve when server responds with rate limit header and status code 200', async () => {
+      await setupTestServer({
+        statusCode: SUCCESS,
+        responseHeaders: {
+          'Retry-After': '2700',
+          'X-Sentry-Rate-Limits': '60::organization, 2700::organization',
+        },
+      });
+
+      const transport = makeNodeTransport(defaultOptions);
+      await expect(transport.send(EVENT_ENVELOPE)).resolves.toEqual({
+        statusCode: SUCCESS,
+        headers: {
+          'retry-after': '2700',
+          'x-sentry-rate-limits': '60::organization, 2700::organization',
+        },
+      });
+    });
+  });
+
+  describe('compression', () => {
+    it('small envelopes should not be compressed', async () => {
+      await setupTestServer(
+        {
+          statusCode: SUCCESS,
+          responseHeaders: {},
+        },
+        (req, body) => {
+          expect(req.headers['content-encoding']).toBeUndefined();
+          expect(body).toBe(SERIALIZED_EVENT_ENVELOPE);
+        },
+      );
+
+      const transport = makeNodeTransport(defaultOptions);
+      await transport.send(EVENT_ENVELOPE);
+    });
+
+    it('large envelopes should be compressed', async () => {
+      await setupTestServer(
+        {
+          statusCode: SUCCESS,
+          responseHeaders: {},
+        },
+        (req, _, raw) => {
+          expect(req.headers['content-encoding']).toEqual('gzip');
+          expect(raw.buffer).toStrictEqual(SERIALIZED_EVENT_ATTACHMENT_ENVELOPE.buffer);
+        },
+      );
+
+      const transport = makeNodeTransport(defaultOptions);
+      await transport.send(EVENT_ATTACHMENT_ENVELOPE);
+    });
   });
 
   describe('proxy', () => {
-    test('can be configured through client option', async () => {
-      const transport = createTransport({
-        dsn,
-        httpProxy: 'http://example.com:8080',
+    const proxyAgentSpy = vi
+      .spyOn(httpProxyAgent, 'HttpsProxyAgent')
+      // @ts-expect-error using http agent as https proxy agent
+      .mockImplementation(function () {
+        return new http.Agent({ keepAlive: false, maxSockets: 30, timeout: 2000 });
       });
-      const client = (transport.client as unknown) as { proxy: Record<string, string | number>; secureProxy: boolean };
-      expect(client).toBeInstanceOf(HttpsProxyAgent);
-      expect(client.secureProxy).toEqual(false);
-      expect(client.proxy).toEqual(expect.objectContaining({ protocol: 'http:', port: 8080, host: 'example.com' }));
+
+    it('can be configured through option', () => {
+      makeNodeTransport({
+        ...defaultOptions,
+        url: 'http://9e9fd4523d784609a5fc0ebb1080592f@sentry.io:8989/mysubpath/50622',
+        proxy: 'http://example.com',
+      });
+
+      expect(proxyAgentSpy).toHaveBeenCalledTimes(1);
+      expect(proxyAgentSpy).toHaveBeenCalledWith('http://example.com');
     });
 
-    test('can be configured through env variables option', async () => {
-      process.env.http_proxy = 'http://example.com:8080';
-      const transport = createTransport({
-        dsn,
-        httpProxy: 'http://example.com:8080',
+    it('can be configured through env variables option', () => {
+      process.env.http_proxy = 'http://example.com';
+      makeNodeTransport({
+        ...defaultOptions,
+        url: 'http://9e9fd4523d784609a5fc0ebb1080592f@sentry.io:8989/mysubpath/50622',
       });
-      const client = (transport.client as unknown) as { proxy: Record<string, string | number>; secureProxy: boolean };
-      expect(client).toBeInstanceOf(HttpsProxyAgent);
-      expect(client.secureProxy).toEqual(false);
-      expect(client.proxy).toEqual(expect.objectContaining({ protocol: 'http:', port: 8080, host: 'example.com' }));
+
+      expect(proxyAgentSpy).toHaveBeenCalledTimes(1);
+      expect(proxyAgentSpy).toHaveBeenCalledWith('http://example.com');
       delete process.env.http_proxy;
     });
 
-    test('client options have priority over env variables', async () => {
-      process.env.http_proxy = 'http://env-example.com:8080';
-      const transport = createTransport({
-        dsn,
-        httpProxy: 'http://example.com:8080',
+    it('client options have priority over env variables', () => {
+      process.env.http_proxy = 'http://foo.com';
+      makeNodeTransport({
+        ...defaultOptions,
+        url: 'http://9e9fd4523d784609a5fc0ebb1080592f@sentry.io:8989/mysubpath/50622',
+        proxy: 'http://bar.com',
       });
-      const client = (transport.client as unknown) as { proxy: Record<string, string | number>; secureProxy: boolean };
-      expect(client).toBeInstanceOf(HttpsProxyAgent);
-      expect(client.secureProxy).toEqual(false);
-      expect(client.proxy).toEqual(expect.objectContaining({ protocol: 'http:', port: 8080, host: 'example.com' }));
+
+      expect(proxyAgentSpy).toHaveBeenCalledTimes(1);
+      expect(proxyAgentSpy).toHaveBeenCalledWith('http://bar.com');
       delete process.env.http_proxy;
     });
 
-    test('no_proxy allows for skipping specific hosts', async () => {
+    it('no_proxy allows for skipping specific hosts', () => {
       process.env.no_proxy = 'sentry.io';
-      const transport = createTransport({
-        dsn,
-        httpProxy: 'http://example.com:8080',
+      makeNodeTransport({
+        ...defaultOptions,
+        url: 'http://9e9fd4523d784609a5fc0ebb1080592f@sentry.io:8989/mysubpath/50622',
+        proxy: 'http://example.com',
       });
-      expect(transport.client).toBeInstanceOf(http.Agent);
+
+      expect(proxyAgentSpy).not.toHaveBeenCalled();
+
+      delete process.env.no_proxy;
     });
 
-    test('no_proxy works with a port', async () => {
+    it('no_proxy works with a port', () => {
       process.env.http_proxy = 'http://example.com:8080';
       process.env.no_proxy = 'sentry.io:8989';
-      const transport = createTransport({
-        dsn,
+
+      makeNodeTransport({
+        ...defaultOptions,
+        url: 'http://9e9fd4523d784609a5fc0ebb1080592f@sentry.io:8989/mysubpath/50622',
       });
-      expect(transport.client).toBeInstanceOf(http.Agent);
+
+      expect(proxyAgentSpy).not.toHaveBeenCalled();
+
+      delete process.env.no_proxy;
       delete process.env.http_proxy;
     });
 
-    test('no_proxy works with multiple comma-separated hosts', async () => {
+    it('no_proxy works with multiple comma-separated hosts', () => {
       process.env.http_proxy = 'http://example.com:8080';
       process.env.no_proxy = 'example.com,sentry.io,wat.com:1337';
-      const transport = createTransport({
-        dsn,
+
+      makeNodeTransport({
+        ...defaultOptions,
+        url: 'http://9e9fd4523d784609a5fc0ebb1080592f@sentry.io:8989/mysubpath/50622',
       });
-      expect(transport.client).toBeInstanceOf(http.Agent);
+
+      expect(proxyAgentSpy).not.toHaveBeenCalled();
+
+      delete process.env.no_proxy;
       delete process.env.http_proxy;
     });
+  });
+
+  describe('should register TransportRequestExecutor that returns the correct object from server response', () => {
+    it('rate limit', async () => {
+      await setupTestServer({
+        statusCode: RATE_LIMIT,
+        responseHeaders: {},
+      });
+
+      makeNodeTransport(defaultOptions);
+      const registeredRequestExecutor = (createTransport as Mock).mock.calls[0]?.[1];
+
+      const executorResult = registeredRequestExecutor({
+        body: serializeEnvelope(EVENT_ENVELOPE),
+        category: 'error',
+      });
+
+      await expect(executorResult).resolves.toEqual(
+        expect.objectContaining({
+          statusCode: RATE_LIMIT,
+        }),
+      );
+    });
+
+    it('OK', async () => {
+      await setupTestServer({
+        statusCode: SUCCESS,
+      });
+
+      makeNodeTransport(defaultOptions);
+      const registeredRequestExecutor = (createTransport as Mock).mock.calls[0]?.[1];
+
+      const executorResult = registeredRequestExecutor({
+        body: serializeEnvelope(EVENT_ENVELOPE),
+        category: 'error',
+      });
+
+      await expect(executorResult).resolves.toEqual(
+        expect.objectContaining({
+          statusCode: SUCCESS,
+          headers: {
+            'retry-after': null,
+            'x-sentry-rate-limits': null,
+          },
+        }),
+      );
+    });
+
+    it('OK with rate-limit headers', async () => {
+      await setupTestServer({
+        statusCode: SUCCESS,
+        responseHeaders: {
+          'Retry-After': '2700',
+          'X-Sentry-Rate-Limits': '60::organization, 2700::organization',
+        },
+      });
+
+      makeNodeTransport(defaultOptions);
+      const registeredRequestExecutor = (createTransport as Mock).mock.calls[0]?.[1];
+
+      const executorResult = registeredRequestExecutor({
+        body: serializeEnvelope(EVENT_ENVELOPE),
+        category: 'error',
+      });
+
+      await expect(executorResult).resolves.toEqual(
+        expect.objectContaining({
+          statusCode: SUCCESS,
+          headers: {
+            'retry-after': '2700',
+            'x-sentry-rate-limits': '60::organization, 2700::organization',
+          },
+        }),
+      );
+    });
+
+    it('NOK with rate-limit headers', async () => {
+      await setupTestServer({
+        statusCode: RATE_LIMIT,
+        responseHeaders: {
+          'Retry-After': '2700',
+          'X-Sentry-Rate-Limits': '60::organization, 2700::organization',
+        },
+      });
+
+      makeNodeTransport(defaultOptions);
+      const registeredRequestExecutor = (createTransport as Mock).mock.calls[0]?.[1];
+
+      const executorResult = registeredRequestExecutor({
+        body: serializeEnvelope(EVENT_ENVELOPE),
+        category: 'error',
+      });
+
+      await expect(executorResult).resolves.toEqual(
+        expect.objectContaining({
+          statusCode: RATE_LIMIT,
+          headers: {
+            'retry-after': '2700',
+            'x-sentry-rate-limits': '60::organization, 2700::organization',
+          },
+        }),
+      );
+    });
+  });
+
+  it('should create a noop transport if an invalid url is passed', async () => {
+    const requestSpy = vi.spyOn(http, 'request');
+    const transport = makeNodeTransport({ ...defaultOptions, url: 'foo' });
+    await transport.send(EVENT_ENVELOPE);
+    expect(requestSpy).not.toHaveBeenCalled();
+  });
+
+  it('should warn if an invalid url is passed', async () => {
+    const transport = makeNodeTransport({ ...defaultOptions, url: 'invalid url' });
+    await transport.send(EVENT_ENVELOPE);
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      '[@sentry/node]: Invalid dsn or tunnel option, will not send any events. The tunnel option must be a full URL when used.',
+    );
   });
 });

@@ -1,0 +1,96 @@
+name: Track Framework Updates
+
+on:
+  schedule:
+    # Every Monday Morning at 04:00 UTC
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      since_days:
+        description: 'Number of days to look back (default: 7)'
+        required: false
+        type: number
+        default: 7
+
+concurrency:
+  group: track-framework-updates
+  cancel-in-progress: true
+
+jobs:
+  track-updates:
+    runs-on: ubuntu-latest
+    environment: ci-triage
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: develop
+
+      - name: Determine lookback window
+        id: params
+        env:
+          INPUT_SINCE_DAYS: ${{ github.event.inputs.since_days }}
+        run: |
+          SINCE_DAYS="${INPUT_SINCE_DAYS:-7}"
+          echo "since_days=$SINCE_DAYS" >> "$GITHUB_OUTPUT"
+          echo "Looking back $SINCE_DAYS days"
+
+      - name: Run Claude digest
+        id: digest
+        uses: anthropics/claude-code-action@d535f5172dec02b204866b393d6b20b9b2aaf98d # v1
+        env:
+          ANTHROPIC_BASE_URL: https://openrouter.ai/api
+        with:
+          anthropic_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          prompt: |
+            /track-framework-updates --since-days ${{ steps.params.outputs.since_days }}
+
+            IMPORTANT: Do NOT wait for approval.
+            Do NOT write files outside the workspace.
+            Do NOT use Bash redirection (> file) — it is blocked.
+            Do NOT use `python3 -c` or inline Python — only the skill's scripts are allowed.
+            Do NOT attempt to delete (`rm`) files.
+          claude_args: |
+            --model claude-opus-4-8
+            --max-turns 80
+            --allowedTools "Read,Write,Bash(python3 .agents/skills/track-framework-updates/scripts/collect_updates.py *),Bash(python3 .agents/skills/track-framework-updates/scripts/check_support.py),Bash(python3 .agents/skills/track-framework-updates/scripts/check_sources.py)"
+
+      - name: Post job summary
+        if: always()
+        run: |
+          EXEC_FILE="${{ steps.digest.outputs.execution_file }}"
+          if [ -z "$EXEC_FILE" ] || [ ! -f "$EXEC_FILE" ]; then
+            EXEC_FILE="${RUNNER_TEMP}/claude-execution-output.json"
+          fi
+
+          DIGEST=".agents/skills/track-framework-updates/output/framework-updates-digest.md"
+          SCRIPT=".agents/skills/track-framework-updates/scripts/write_job_summary.py"
+
+          # The digest may land elsewhere if Claude derived the output dir from a
+          # sandboxed absolute path — fall back to searching the workspace.
+          if [ ! -f "$DIGEST" ]; then
+            FOUND=$(find . -name framework-updates-digest.md -not -path './node_modules/*' -print -quit)
+            if [ -n "$FOUND" ]; then
+              DIGEST="$FOUND"
+            fi
+          fi
+
+          if [ -f "$EXEC_FILE" ]; then
+            python3 "$SCRIPT" "$EXEC_FILE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -f "$DIGEST" ]; then
+            echo "## Framework Updates Digest" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            cat "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Framework Updates Digest" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "No output found. The run may have failed before producing results." >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -1,20 +1,52 @@
-import { getCurrentHub, initAndBind, Integrations as CoreIntegrations } from '@sentry/core';
-import { addInstrumentationHandler, getGlobalObject, logger, SyncPromise } from '@sentry/utils';
-
-import { BrowserOptions } from './backend';
+import type { Client, Integration, Options } from '@sentry/core';
+import {
+  consoleIntegration,
+  conversationIdIntegration,
+  dedupeIntegration,
+  eventFiltersIntegration,
+  functionToStringIntegration,
+  getIntegrationsToSetup,
+  initAndBind,
+  setNormalizeStringifier,
+  stackParserFromStackParserOptions,
+} from '@sentry/core';
+import type { BrowserClientOptions, BrowserOptions } from './client';
 import { BrowserClient } from './client';
-import { ReportDialogOptions, wrap as internalWrap } from './helpers';
-import { Breadcrumbs, GlobalHandlers, LinkedErrors, TryCatch, UserAgent } from './integrations';
+import { breadcrumbsIntegration } from './integrations/breadcrumbs';
+import { browserApiErrorsIntegration } from './integrations/browserapierrors';
+import { browserSessionIntegration } from './integrations/browsersession';
+import { cultureContextIntegration } from './integrations/culturecontext';
+import { globalHandlersIntegration } from './integrations/globalhandlers';
+import { httpContextIntegration } from './integrations/httpcontext';
+import { linkedErrorsIntegration } from './integrations/linkederrors';
+import { spotlightBrowserIntegration } from './integrations/spotlight';
+import { defaultStackParser } from './stack-parsers';
+import { makeFetchTransport } from './transports/fetch';
+import { normalizeStringifyValue } from './normalizeStringifyValue';
+import { checkAndWarnIfIsEmbeddedBrowserExtension } from './utils/detectBrowserExtension';
+import { resolveBrowserTunnelOption } from './utils/managedTunnel';
 
-export const defaultIntegrations = [
-  new CoreIntegrations.InboundFilters(),
-  new CoreIntegrations.FunctionToString(),
-  new TryCatch(),
-  new Breadcrumbs(),
-  new GlobalHandlers(),
-  new LinkedErrors(),
-  new UserAgent(),
-];
+/** Get the default integrations for the browser SDK. */
+export function getDefaultIntegrations(_options: Options): Integration[] {
+  /**
+   * Note: Please make sure this stays in sync with Angular SDK, which re-exports
+   * `getDefaultIntegrations` but with an adjusted set of integrations.
+   */
+  return [
+    eventFiltersIntegration(),
+    functionToStringIntegration(),
+    conversationIdIntegration(),
+    browserApiErrorsIntegration(),
+    breadcrumbsIntegration(),
+    consoleIntegration(),
+    globalHandlersIntegration(),
+    linkedErrorsIntegration(),
+    dedupeIntegration(),
+    httpContextIntegration(),
+    cultureContextIntegration(),
+    browserSessionIntegration(),
+  ];
+}
 
 /**
  * The Sentry Browser SDK Client.
@@ -32,17 +64,6 @@ export const defaultIntegrations = [
  * init({
  *   dsn: '__DSN__',
  *   // ...
- * });
- * ```
- *
- * @example
- * ```
- *
- * import { configureScope } from '@sentry/browser';
- * configureScope((scope: Scope) => {
- *   scope.setExtra({ battery: 0.7 });
- *   scope.setTag({ user_mode: 'admin' });
- *   scope.setUser({ id: '4711' });
  * });
  * ```
  *
@@ -73,50 +94,40 @@ export const defaultIntegrations = [
  *
  * @see {@link BrowserOptions} for documentation on configuration options.
  */
-export function init(options: BrowserOptions = {}): void {
-  if (options.defaultIntegrations === undefined) {
-    options.defaultIntegrations = defaultIntegrations;
-  }
-  if (options.release === undefined) {
-    const window = getGlobalObject<Window>();
-    // This supports the variable that sentry-webpack-plugin injects
-    if (window.SENTRY_RELEASE && window.SENTRY_RELEASE.id) {
-      options.release = window.SENTRY_RELEASE.id;
+export function init(options: BrowserOptions = {}): Client | undefined {
+  const shouldDisableBecauseIsBrowserExtenstion =
+    !options.skipBrowserExtensionCheck && checkAndWarnIfIsEmbeddedBrowserExtension();
+
+  let defaultIntegrations =
+    options.defaultIntegrations == null ? getDefaultIntegrations(options) : options.defaultIntegrations;
+
+  /*! rollup-include-development-only */
+  if (options.spotlight) {
+    if (!defaultIntegrations) {
+      defaultIntegrations = [];
     }
+    const args = typeof options.spotlight === 'string' ? { sidecarUrl: options.spotlight } : undefined;
+    defaultIntegrations.push(spotlightBrowserIntegration(args));
   }
-  if (options.autoSessionTracking === undefined) {
-    options.autoSessionTracking = true;
-  }
+  /*! rollup-include-development-only-end */
 
-  initAndBind(BrowserClient, options);
+  const integrations = getIntegrationsToSetup({
+    integrations: options.integrations,
+    defaultIntegrations,
+  });
 
-  if (options.autoSessionTracking) {
-    startSessionTracking();
-  }
-}
+  const clientOptions: BrowserClientOptions = {
+    ...options,
+    ...resolveBrowserTunnelOption(options),
+    enabled: shouldDisableBecauseIsBrowserExtenstion ? false : options.enabled,
+    stackParser: stackParserFromStackParserOptions(options.stackParser || defaultStackParser),
+    integrations,
+    transport: options.transport || makeFetchTransport,
+  };
 
-/**
- * Present the user with a report dialog.
- *
- * @param options Everything is optional, we try to fetch all info need from the global scope.
- */
-export function showReportDialog(options: ReportDialogOptions = {}): void {
-  if (!options.eventId) {
-    options.eventId = getCurrentHub().lastEventId();
-  }
-  const client = getCurrentHub().getClient<BrowserClient>();
-  if (client) {
-    client.showReportDialog(options);
-  }
-}
+  setNormalizeStringifier(normalizeStringifyValue);
 
-/**
- * This is the getter for lastEventId.
- *
- * @returns The last event id of a captured event.
- */
-export function lastEventId(): string | undefined {
-  return getCurrentHub().lastEventId();
+  return initAndBind(BrowserClient, clientOptions);
 }
 
 /**
@@ -133,81 +144,4 @@ export function forceLoad(): void {
  */
 export function onLoad(callback: () => void): void {
   callback();
-}
-
-/**
- * A promise that resolves when all current events have been sent.
- * If you provide a timeout and the queue takes longer to drain the promise returns false.
- *
- * @param timeout Maximum time in ms the client should wait.
- */
-export function flush(timeout?: number): PromiseLike<boolean> {
-  const client = getCurrentHub().getClient<BrowserClient>();
-  if (client) {
-    return client.flush(timeout);
-  }
-  return SyncPromise.reject(false);
-}
-
-/**
- * A promise that resolves when all current events have been sent.
- * If you provide a timeout and the queue takes longer to drain the promise returns false.
- *
- * @param timeout Maximum time in ms the client should wait.
- */
-export function close(timeout?: number): PromiseLike<boolean> {
-  const client = getCurrentHub().getClient<BrowserClient>();
-  if (client) {
-    return client.close(timeout);
-  }
-  return SyncPromise.reject(false);
-}
-
-/**
- * Wrap code within a try/catch block so the SDK is able to capture errors.
- *
- * @param fn A function to wrap.
- *
- * @returns The result of wrapped function call.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function wrap(fn: (...args: any) => any): any {
-  return internalWrap(fn)();
-}
-
-/**
- * Enable automatic Session Tracking for the initial page load.
- */
-function startSessionTracking(): void {
-  const window = getGlobalObject<Window>();
-  const document = window.document;
-
-  if (typeof document === 'undefined') {
-    logger.warn('Session tracking in non-browser environment with @sentry/browser is not supported.');
-    return;
-  }
-
-  const hub = getCurrentHub();
-
-  // The only way for this to be false is for there to be a version mismatch between @sentry/browser (>= 6.0.0) and
-  // @sentry/hub (< 5.27.0). In the simple case, there won't ever be such a mismatch, because the two packages are
-  // pinned at the same version in package.json, but there are edge cases where it's possible. See
-  // https://github.com/getsentry/sentry-javascript/issues/3207 and
-  // https://github.com/getsentry/sentry-javascript/issues/3234 and
-  // https://github.com/getsentry/sentry-javascript/issues/3278.
-  if (typeof hub.startSession !== 'function' || typeof hub.captureSession !== 'function') {
-    return;
-  }
-
-  hub.startSession();
-  hub.captureSession();
-
-  // We want to create a session for every navigation as well
-  addInstrumentationHandler({
-    callback: () => {
-      hub.startSession();
-      hub.captureSession();
-    },
-    type: 'history',
-  });
 }

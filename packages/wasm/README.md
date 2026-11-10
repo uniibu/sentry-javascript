@@ -1,8 +1,11 @@
 <p align="center">
-  <a href="https://sentry.io" target="_blank" align="center">
-    <img src="https://sentry-brand.storage.googleapis.com/sentry-logo-black.png" width="280">
+  <a href="https://sentry.io/?utm_source=github&utm_medium=logo" target="_blank">
+    <picture>
+      <source srcset="https://sentry-brand.storage.googleapis.com/sentry-logo-white.png" media="(prefers-color-scheme: dark)" />
+      <source srcset="https://sentry-brand.storage.googleapis.com/sentry-wordmark-dark-280x84.png" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)" />
+      <img src="https://sentry-brand.storage.googleapis.com/sentry-wordmark-dark-280x84.png" alt="Sentry" width="280">
+    </picture>
   </a>
-  <br />
 </p>
 
 # Sentry JavaScript WebAssembly Support
@@ -10,13 +13,15 @@
 [![npm version](https://img.shields.io/npm/v/@sentry/wasm.svg)](https://www.npmjs.com/package/@sentry/wasm)
 [![npm dm](https://img.shields.io/npm/dm/@sentry/wasm.svg)](https://www.npmjs.com/package/@sentry/wasm)
 [![npm dt](https://img.shields.io/npm/dt/@sentry/wasm.svg)](https://www.npmjs.com/package/@sentry/wasm)
-[![typedoc](https://img.shields.io/badge/docs-typedoc-blue.svg)](http://getsentry.github.io/sentry-javascript/)
 
-## Links
+WebAssembly stack-trace support for the Sentry JavaScript SDK.
 
-- [Official SDK Docs](https://docs.sentry.io/quickstart/)
-- [TypeDoc](http://getsentry.github.io/sentry-javascript/)
+## Documentation
 
-## General
+- [Getting started](https://docs.sentry.io/platforms/javascript/guides/wasm/)
+- [Configuration](https://docs.sentry.io/platforms/javascript/guides/wasm/configuration/)
 
-This package provides support for WebAssembly in stack traces.
+## Support
+
+- [Report a bug](https://github.com/getsentry/sentry-javascript/issues/new/choose)
+- [Contributing](https://github.com/getsentry/sentry-javascript/blob/develop/CONTRIBUTING.md)

@@ -1,46 +1,114 @@
-export {
+export type {
   Breadcrumb,
   BreadcrumbHint,
-  Request,
+  Context,
+  Contexts,
+  RequestEventData,
   SdkInfo,
   Event,
   EventHint,
+  ErrorEvent,
   Exception,
-  Response,
-  Severity,
+  SeverityLevel,
   StackFrame,
   Stacktrace,
-  Status,
   Thread,
   User,
-} from '@sentry/types';
+  Session,
+  ReportDialogOptions,
+  CaptureContext,
+  ExclusiveEventHintOrCaptureContext,
+  Log,
+  LogSeverityLevel,
+} from '@sentry/core';
+
+export type { BrowserOptions } from './client';
+export type { LoaderSentry } from './loader-types';
 
 export {
-  addGlobalEventProcessor,
+  addEventProcessor,
   addBreadcrumb,
+  addIntegration,
   captureException,
   captureEvent,
+  captureFeedback,
   captureMessage,
-  configureScope,
-  getHubFromCarrier,
-  getCurrentHub,
-  Hub,
-  makeMain,
+  close,
+  createTransport,
+  lastEventId,
+  flush,
+  getClient,
+  isInitialized,
+  isEnabled,
+  getCurrentScope,
+  getIsolationScope,
+  getGlobalScope,
+  setCurrentClient,
   Scope,
-  startTransaction,
+  continueTrace,
+  getTraceData,
+  suppressTracing,
   SDK_VERSION,
   setContext,
   setExtra,
   setExtras,
   setTag,
   setTags,
+  setAttribute,
+  setAttributes,
   setUser,
+  setConversationId,
   withScope,
+  withIsolationScope,
+  functionToStringIntegration,
+  eventFiltersIntegration,
+  dedupeIntegration,
+  consoleIntegration,
+  parameterize,
+  startSession,
+  captureSession,
+  endSession,
+  spanToStaticSpanJSON,
+  spanToJSON,
+  spanToTraceHeader,
+  spanToBaggageHeader,
+  updateSpanName,
+  withStaticSpan,
+  // oxlint-disable-next-line typescript/no-deprecated
+  withStreamedSpan,
 } from '@sentry/core';
 
-export { BrowserOptions } from './backend';
+export {
+  // oxlint-disable-next-line typescript/no-deprecated
+  SEMANTIC_ATTRIBUTE_SENTRY_OP,
+  // oxlint-disable-next-line typescript/no-deprecated
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE,
+} from '@sentry/core';
+
+export { WINDOW } from './helpers';
 export { BrowserClient } from './client';
-export { injectReportDialog, ReportDialogOptions } from './helpers';
-export { eventFromException, eventFromMessage } from './eventbuilder';
-export { defaultIntegrations, forceLoad, init, lastEventId, onLoad, showReportDialog, flush, close, wrap } from './sdk';
-export { SDK_NAME } from './version';
+export { makeFetchTransport } from './transports/fetch';
+export { uiProfiler } from './profiling';
+export {
+  defaultStackParser,
+  defaultStackLineParsers,
+  chromeStackLineParser,
+  geckoStackLineParser,
+  opera10StackLineParser,
+  opera11StackLineParser,
+  winjsStackLineParser,
+} from './stack-parsers';
+export { eventFromException, eventFromMessage, exceptionFromError } from './eventbuilder';
+export { createUserFeedbackEnvelope } from './userfeedback';
+export { getDefaultIntegrations, forceLoad, init, onLoad } from './sdk';
+export { showReportDialog } from './report-dialog';
+
+export { breadcrumbsIntegration } from './integrations/breadcrumbs';
+export { globalHandlersIntegration } from './integrations/globalhandlers';
+export { httpContextIntegration } from './integrations/httpcontext';
+export { linkedErrorsIntegration } from './integrations/linkederrors';
+export { browserApiErrorsIntegration } from './integrations/browserapierrors';
+export { browserSessionIntegration } from './integrations/browsersession';
+
+export { lazyLoadIntegration } from './utils/lazyLoadIntegration';

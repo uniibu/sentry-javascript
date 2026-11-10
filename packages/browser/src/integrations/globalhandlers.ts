@@ -1,258 +1,219 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
-import { getCurrentHub } from '@sentry/core';
-import { Event, Integration, Primitive, Severity } from '@sentry/types';
+import type { Client, Event, IntegrationFn, Primitive, StackParser } from '@sentry/core';
 import {
-  addExceptionMechanism,
-  addInstrumentationHandler,
-  getLocationHref,
-  isErrorEvent,
+  addGlobalErrorInstrumentationHandler,
+  addGlobalUnhandledRejectionInstrumentationHandler,
+  captureEvent,
+  debug,
+  defineIntegration,
+  getClient,
   isPrimitive,
   isString,
-  logger,
-} from '@sentry/utils';
-
+  stripDataUrlContent,
+  UNKNOWN_FUNCTION,
+} from '@sentry/core';
+import type { BrowserClient } from '../client';
+import { DEBUG_BUILD } from '../debug-build';
+import { getLocationHref } from '@sentry/browser-utils';
 import { eventFromUnknownInput } from '../eventbuilder';
 import { shouldIgnoreOnError } from '../helpers';
 
-/** JSDoc */
-interface GlobalHandlersIntegrations {
-  onerror: boolean;
-  onunhandledrejection: boolean;
+type GlobalHandlersIntegrationsOptionKeys = 'onerror' | 'onunhandledrejection';
+
+type GlobalHandlersIntegrations = Record<GlobalHandlersIntegrationsOptionKeys, boolean>;
+
+const INTEGRATION_NAME = 'GlobalHandlers' as const;
+
+const _globalHandlersIntegration = ((options: Partial<GlobalHandlersIntegrations> = {}) => {
+  const _options = {
+    onerror: true,
+    onunhandledrejection: true,
+    ...options,
+  };
+
+  return {
+    name: INTEGRATION_NAME,
+    setupOnce() {
+      Error.stackTraceLimit = 50;
+    },
+    setup(client) {
+      if (_options.onerror) {
+        _installGlobalOnErrorHandler(client);
+        globalHandlerLog('onerror');
+      }
+      if (_options.onunhandledrejection) {
+        _installGlobalOnUnhandledRejectionHandler(client);
+        globalHandlerLog('onunhandledrejection');
+      }
+    },
+  };
+}) satisfies IntegrationFn;
+
+export const globalHandlersIntegration = defineIntegration(_globalHandlersIntegration);
+
+function _installGlobalOnErrorHandler(client: Client): void {
+  addGlobalErrorInstrumentationHandler(data => {
+    const { stackParser, attachStacktrace } = getOptions();
+
+    if (getClient() !== client || shouldIgnoreOnError(data)) {
+      return;
+    }
+
+    const { msg, url, line, column, error } = data;
+
+    const event = _enhanceEventWithInitialFrame(
+      eventFromUnknownInput(stackParser, error || msg, undefined, attachStacktrace, false),
+      url,
+      line,
+      column,
+    );
+
+    event.level = 'error';
+
+    captureEvent(event, {
+      originalException: error,
+      mechanism: {
+        handled: false,
+        type: 'auto.browser.global_handlers.onerror',
+      },
+    });
+  });
 }
 
-/** Global handlers */
-export class GlobalHandlers implements Integration {
-  /**
-   * @inheritDoc
-   */
-  public static id: string = 'GlobalHandlers';
+function _installGlobalOnUnhandledRejectionHandler(client: Client): void {
+  addGlobalUnhandledRejectionInstrumentationHandler(e => {
+    const { stackParser, attachStacktrace } = getOptions();
 
-  /**
-   * @inheritDoc
-   */
-  public name: string = GlobalHandlers.id;
-
-  /** JSDoc */
-  private readonly _options: GlobalHandlersIntegrations;
-
-  /** JSDoc */
-  private _onErrorHandlerInstalled: boolean = false;
-
-  /** JSDoc */
-  private _onUnhandledRejectionHandlerInstalled: boolean = false;
-
-  /** JSDoc */
-  public constructor(options?: GlobalHandlersIntegrations) {
-    this._options = {
-      onerror: true,
-      onunhandledrejection: true,
-      ...options,
-    };
-  }
-  /**
-   * @inheritDoc
-   */
-  public setupOnce(): void {
-    Error.stackTraceLimit = 50;
-
-    if (this._options.onerror) {
-      logger.log('Global Handler attached: onerror');
-      this._installGlobalOnErrorHandler();
-    }
-
-    if (this._options.onunhandledrejection) {
-      logger.log('Global Handler attached: onunhandledrejection');
-      this._installGlobalOnUnhandledRejectionHandler();
-    }
-  }
-
-  /** JSDoc */
-  private _installGlobalOnErrorHandler(): void {
-    if (this._onErrorHandlerInstalled) {
+    if (getClient() !== client || shouldIgnoreOnError()) {
       return;
     }
 
-    addInstrumentationHandler({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      callback: (data: { msg: any; url: any; line: any; column: any; error: any }) => {
-        const error = data.error;
-        const currentHub = getCurrentHub();
-        const hasIntegration = currentHub.getIntegration(GlobalHandlers);
-        const isFailedOwnDelivery = error && error.__sentry_own_request__ === true;
+    const error = _getUnhandledRejectionError(e);
 
-        if (!hasIntegration || shouldIgnoreOnError() || isFailedOwnDelivery) {
-          return;
-        }
+    const event = isPrimitive(error)
+      ? _eventFromRejectionWithPrimitive(error)
+      : eventFromUnknownInput(stackParser, error, undefined, attachStacktrace, true);
 
-        const client = currentHub.getClient();
-        const event = isPrimitive(error)
-          ? this._eventFromIncompleteOnError(data.msg, data.url, data.line, data.column)
-          : this._enhanceEventWithInitialFrame(
-              eventFromUnknownInput(error, undefined, {
-                attachStacktrace: client && client.getOptions().attachStacktrace,
-                rejection: false,
-              }),
-              data.url,
-              data.line,
-              data.column,
-            );
+    event.level = 'error';
 
-        addExceptionMechanism(event, {
-          handled: false,
-          type: 'onerror',
-        });
-
-        currentHub.captureEvent(event, {
-          originalException: error,
-        });
+    captureEvent(event, {
+      originalException: error,
+      mechanism: {
+        handled: false,
+        type: 'auto.browser.global_handlers.onunhandledrejection',
       },
-      type: 'error',
     });
+  });
+}
 
-    this._onErrorHandlerInstalled = true;
+/**
+ *
+ */
+export function _getUnhandledRejectionError(error: unknown): unknown {
+  if (isPrimitive(error)) {
+    return error;
   }
 
-  /** JSDoc */
-  private _installGlobalOnUnhandledRejectionHandler(): void {
-    if (this._onUnhandledRejectionHandlerInstalled) {
-      return;
+  // dig the object of the rejection out of known event types
+  try {
+    type ErrorWithReason = { reason: unknown };
+    // PromiseRejectionEvents store the object of the rejection under 'reason'
+    // see https://developer.mozilla.org/en-US/docs/Web/API/PromiseRejectionEvent
+    if ('reason' in (error as ErrorWithReason)) {
+      return (error as ErrorWithReason).reason;
     }
 
-    addInstrumentationHandler({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      callback: (e: any) => {
-        let error = e;
+    type CustomEventWithDetail = { detail: { reason: unknown } };
+    // something, somewhere, (likely a browser extension) effectively casts PromiseRejectionEvents
+    // to CustomEvents, moving the `promise` and `reason` attributes of the PRE into
+    // the CustomEvent's `detail` attribute, since they're not part of CustomEvent's spec
+    // see https://developer.mozilla.org/en-US/docs/Web/API/CustomEvent and
+    // https://github.com/getsentry/sentry-javascript/issues/2380
+    if ('detail' in (error as CustomEventWithDetail) && 'reason' in (error as CustomEventWithDetail).detail) {
+      return (error as CustomEventWithDetail).detail.reason;
+    }
+  } catch {} // eslint-disable-line no-empty
 
-        // dig the object of the rejection out of known event types
-        try {
-          // PromiseRejectionEvents store the object of the rejection under 'reason'
-          // see https://developer.mozilla.org/en-US/docs/Web/API/PromiseRejectionEvent
-          if ('reason' in e) {
-            error = e.reason;
-          }
-          // something, somewhere, (likely a browser extension) effectively casts PromiseRejectionEvents
-          // to CustomEvents, moving the `promise` and `reason` attributes of the PRE into
-          // the CustomEvent's `detail` attribute, since they're not part of CustomEvent's spec
-          // see https://developer.mozilla.org/en-US/docs/Web/API/CustomEvent and
-          // https://github.com/getsentry/sentry-javascript/issues/2380
-          else if ('detail' in e && 'reason' in e.detail) {
-            error = e.detail.reason;
-          }
-        } catch (_oO) {
-          // no-empty
-        }
+  return error;
+}
 
-        const currentHub = getCurrentHub();
-        const hasIntegration = currentHub.getIntegration(GlobalHandlers);
-        const isFailedOwnDelivery = error && error.__sentry_own_request__ === true;
+/**
+ * Create an event from a promise rejection where the `reason` is a primitive.
+ *
+ * @param reason: The `reason` property of the promise rejection
+ * @returns An Event object with an appropriate `exception` value
+ */
+export function _eventFromRejectionWithPrimitive(reason: Primitive): Event {
+  return {
+    exception: {
+      values: [
+        {
+          type: 'UnhandledRejection',
+          // String() is needed because the Primitive type includes symbols (which can't be automatically stringified)
+          value: `Non-Error promise rejection captured with value: ${String(reason)}`,
+        },
+      ],
+    },
+  };
+}
 
-        if (!hasIntegration || shouldIgnoreOnError() || isFailedOwnDelivery) {
-          return true;
-        }
+/**
+ * Adds a frame built from the error location when the event has none.
+ */
+export function _enhanceEventWithInitialFrame(
+  event: Event,
+  url: string | undefined,
+  lineno: number | undefined,
+  colno: number | undefined,
+): Event {
+  // event.exception
+  const e = (event.exception = event.exception || {});
+  // event.exception.values
+  const ev = (e.values = e.values || []);
+  // event.exception.values[0]
+  const ev0 = (ev[0] = ev[0] || {});
+  // event.exception.values[0].stacktrace
+  const ev0s = (ev0.stacktrace = ev0.stacktrace || {});
+  // event.exception.values[0].stacktrace.frames
+  const ev0sf = (ev0s.frames = ev0s.frames || []);
 
-        const client = currentHub.getClient();
-        const event = isPrimitive(error)
-          ? this._eventFromRejectionWithPrimitive(error)
-          : eventFromUnknownInput(error, undefined, {
-              attachStacktrace: client && client.getOptions().attachStacktrace,
-              rejection: true,
-            });
-
-        event.level = Severity.Error;
-
-        addExceptionMechanism(event, {
-          handled: false,
-          type: 'onunhandledrejection',
-        });
-
-        currentHub.captureEvent(event, {
-          originalException: error,
-        });
-
-        return;
-      },
-      type: 'unhandledrejection',
+  if (ev0sf.length === 0) {
+    ev0sf.push({
+      colno,
+      lineno,
+      filename: getFilenameFromUrl(url) ?? getLocationHref(),
+      function: UNKNOWN_FUNCTION,
+      in_app: true,
     });
-
-    this._onUnhandledRejectionHandlerInstalled = true;
   }
 
-  /**
-   * This function creates a stack from an old, error-less onerror handler.
-   */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private _eventFromIncompleteOnError(msg: any, url: any, line: any, column: any): Event {
-    const ERROR_TYPES_RE = /^(?:[Uu]ncaught (?:exception: )?)?(?:((?:Eval|Internal|Range|Reference|Syntax|Type|URI|)Error): )?(.*)$/i;
+  return event;
+}
 
-    // If 'message' is ErrorEvent, get real message from inside
-    let message = isErrorEvent(msg) ? msg.message : msg;
-    let name;
+function globalHandlerLog(type: string): void {
+  DEBUG_BUILD && debug.log(`Global Handler attached: ${type}`);
+}
 
-    if (isString(message)) {
-      const groups = message.match(ERROR_TYPES_RE);
-      if (groups) {
-        name = groups[1];
-        message = groups[2];
-      }
-    }
+function getOptions(): { stackParser: StackParser; attachStacktrace?: boolean } {
+  const client = getClient<BrowserClient>();
+  const options = client?.getOptions() || {
+    stackParser: () => [],
+    attachStacktrace: false,
+  };
+  return options;
+}
 
-    const event = {
-      exception: {
-        values: [
-          {
-            type: name || 'Error',
-            value: message,
-          },
-        ],
-      },
-    };
-
-    return this._enhanceEventWithInitialFrame(event, url, line, column);
+function getFilenameFromUrl(url: string | undefined): string | undefined {
+  if (!isString(url) || url.length === 0) {
+    return undefined;
   }
 
-  /**
-   * Create an event from a promise rejection where the `reason` is a primitive.
-   *
-   * @param reason: The `reason` property of the promise rejection
-   * @returns An Event object with an appropriate `exception` value
-   */
-  private _eventFromRejectionWithPrimitive(reason: Primitive): Event {
-    return {
-      exception: {
-        values: [
-          {
-            type: 'UnhandledRejection',
-            // String() is needed because the Primitive type includes symbols (which can't be automatically stringified)
-            value: `Non-Error promise rejection captured with value: ${String(reason)}`,
-          },
-        ],
-      },
-    };
+  // Strip data URL content to avoid long base64 strings in stack frames
+  // (e.g. when initializing a Worker with a base64 encoded script)
+  // Don't include data prefix for filenames as it's not useful for stack traces
+  // Wrap with < > to indicate it's a placeholder
+  if (url.startsWith('data:')) {
+    return `<${stripDataUrlContent(url, false)}>`;
   }
 
-  /** JSDoc */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private _enhanceEventWithInitialFrame(event: Event, url: any, line: any, column: any): Event {
-    event.exception = event.exception || {};
-    event.exception.values = event.exception.values || [];
-    event.exception.values[0] = event.exception.values[0] || {};
-    event.exception.values[0].stacktrace = event.exception.values[0].stacktrace || {};
-    event.exception.values[0].stacktrace.frames = event.exception.values[0].stacktrace.frames || [];
-
-    const colno = isNaN(parseInt(column, 10)) ? undefined : column;
-    const lineno = isNaN(parseInt(line, 10)) ? undefined : line;
-    const filename = isString(url) && url.length > 0 ? url : getLocationHref();
-
-    if (event.exception.values[0].stacktrace.frames.length === 0) {
-      event.exception.values[0].stacktrace.frames.push({
-        colno,
-        filename,
-        function: '?',
-        in_app: true,
-        lineno,
-      });
-    }
-
-    return event;
-  }
+  return url;
 }

@@ -1,153 +1,69 @@
-import { eventToSentryRequest, sessionToSentryRequest } from '@sentry/core';
-import { Event, Response, SentryRequest, Session, TransportOptions } from '@sentry/types';
-import { getGlobalObject, isNativeFetch, logger, supportsReferrerPolicy, SyncPromise } from '@sentry/utils';
+import type { Transport, TransportMakeRequestResponse, TransportRequest } from '@sentry/core';
+import { createTransport, makePromiseBuffer } from '@sentry/core';
+import { clearCachedImplementation, getNativeImplementation } from '@sentry/browser-utils';
+import type { WINDOW } from '../helpers';
+import type { BrowserTransportOptions } from './types';
 
-import { BaseTransport } from './base';
-
-type FetchImpl = typeof fetch;
+const DEFAULT_BROWSER_TRANSPORT_BUFFER_SIZE = 40;
 
 /**
- * A special usecase for incorrectly wrapped Fetch APIs in conjunction with ad-blockers.
- * Whenever someone wraps the Fetch API and returns the wrong promise chain,
- * this chain becomes orphaned and there is no possible way to capture it's rejections
- * other than allowing it bubble up to this very handler. eg.
- *
- * const f = window.fetch;
- * window.fetch = function () {
- *   const p = f.apply(this, arguments);
- *
- *   p.then(function() {
- *     console.log('hi.');
- *   });
- *
- *   return p;
- * }
- *
- * `p.then(function () { ... })` is producing a completely separate promise chain,
- * however, what's returned is `p` - the result of original `fetch` call.
- *
- * This mean, that whenever we use the Fetch API to send our own requests, _and_
- * some ad-blocker blocks it, this orphaned chain will _always_ reject,
- * effectively causing another event to be captured.
- * This makes a whole process become an infinite loop, which we need to somehow
- * deal with, and break it in one way or another.
- *
- * To deal with this issue, we are making sure that we _always_ use the real
- * browser Fetch API, instead of relying on what `window.fetch` exposes.
- * The only downside to this would be missing our own requests as breadcrumbs,
- * but because we are already not doing this, it should be just fine.
- *
- * Possible failed fetch error messages per-browser:
- *
- * Chrome:  Failed to fetch
- * Edge:    Failed to Fetch
- * Firefox: NetworkError when attempting to fetch resource
- * Safari:  resource blocked by content blocker
+ * Creates a Transport that uses the Fetch API to send events to Sentry.
  */
-function getNativeFetchImplementation(): FetchImpl {
-  /* eslint-disable @typescript-eslint/unbound-method */
+export function makeFetchTransport(
+  options: BrowserTransportOptions,
+  nativeFetch: typeof WINDOW.fetch = getNativeImplementation('fetch'),
+): Transport {
+  let pendingBodySize = 0;
+  let pendingCount = 0;
 
-  // Fast path to avoid DOM I/O
-  const global = getGlobalObject<Window>();
-  if (isNativeFetch(global.fetch)) {
-    return global.fetch.bind(global);
-  }
+  async function makeRequest(request: TransportRequest): Promise<TransportMakeRequestResponse> {
+    const requestSize = request.body.length;
+    pendingBodySize += requestSize;
+    pendingCount++;
 
-  const document = global.document;
-  let fetchImpl = global.fetch;
-  // eslint-disable-next-line deprecation/deprecation
-  if (typeof document?.createElement === `function`) {
-    try {
-      const sandbox = document.createElement('iframe');
-      sandbox.hidden = true;
-      document.head.appendChild(sandbox);
-      if (sandbox.contentWindow?.fetch) {
-        fetchImpl = sandbox.contentWindow.fetch;
-      }
-      document.head.removeChild(sandbox);
-    } catch (e) {
-      logger.warn('Could not create sandbox iframe for pure fetch check, bailing to window.fetch: ', e);
-    }
-  }
-
-  return fetchImpl.bind(global);
-  /* eslint-enable @typescript-eslint/unbound-method */
-}
-
-/** `fetch` based transport */
-export class FetchTransport extends BaseTransport {
-  /**
-   * Fetch API reference which always points to native browser implementation.
-   */
-  private _fetch: typeof fetch;
-
-  constructor(options: TransportOptions, fetchImpl: FetchImpl = getNativeFetchImplementation()) {
-    super(options);
-    this._fetch = fetchImpl;
-  }
-
-  /**
-   * @inheritDoc
-   */
-  public sendEvent(event: Event): PromiseLike<Response> {
-    return this._sendRequest(eventToSentryRequest(event, this._api), event);
-  }
-
-  /**
-   * @inheritDoc
-   */
-  public sendSession(session: Session): PromiseLike<Response> {
-    return this._sendRequest(sessionToSentryRequest(session, this._api), session);
-  }
-
-  /**
-   * @param sentryRequest Prepared SentryRequest to be delivered
-   * @param originalPayload Original payload used to create SentryRequest
-   */
-  private _sendRequest(sentryRequest: SentryRequest, originalPayload: Event | Session): PromiseLike<Response> {
-    if (this._isRateLimited(sentryRequest.type)) {
-      return Promise.reject({
-        event: originalPayload,
-        type: sentryRequest.type,
-        reason: `Transport locked till ${this._disabledUntil(sentryRequest.type)} due to too many requests.`,
-        status: 429,
-      });
-    }
-
-    const options: RequestInit = {
-      body: sentryRequest.body,
+    const requestOptions: RequestInit = {
+      body: request.body as BodyInit,
       method: 'POST',
-      // Despite all stars in the sky saying that Edge supports old draft syntax, aka 'never', 'always', 'origin' and 'default
-      // https://caniuse.com/#feat=referrer-policy
-      // It doesn't. And it throw exception instead of ignoring this parameter...
-      // REF: https://github.com/getsentry/raven-js/issues/1233
-      referrerPolicy: (supportsReferrerPolicy() ? 'origin' : '') as ReferrerPolicy,
+      referrerPolicy: 'strict-origin',
+      headers: options.headers,
+      // Outgoing requests are usually cancelled when navigating to a different page, causing a "TypeError: Failed to
+      // fetch" error and sending a "network_error" client-outcome - in Chrome, the request status shows "(cancelled)".
+      // The `keepalive` flag keeps outgoing requests alive, even when switching pages. We want this since we're
+      // frequently sending events right before the user is switching pages (eg. when finishing navigation transactions).
+      // Gotchas:
+      // - `keepalive` isn't supported by Firefox
+      // - As per spec (https://fetch.spec.whatwg.org/#http-network-or-cache-fetch):
+      //   If the sum of contentLength and inflightKeepaliveBytes is greater than 64 kibibytes, then return a network error.
+      //   We will therefore only activate the flag when we're below that limit.
+      // There is also a limit of requests that can be open at the same time, so we also limit this to 15
+      // See https://github.com/getsentry/sentry-javascript/pull/7553 for details
+      keepalive: pendingBodySize <= 60_000 && pendingCount < 15,
+      ...options.fetchOptions,
     };
-    if (this.options.fetchParameters !== undefined) {
-      Object.assign(options, this.options.fetchParameters);
-    }
-    if (this.options.headers !== undefined) {
-      options.headers = this.options.headers;
-    }
 
-    return this._buffer.add(
-      new SyncPromise<Response>((resolve, reject) => {
-        this._fetch(sentryRequest.url, options)
-          .then(response => {
-            const headers = {
-              'x-sentry-rate-limits': response.headers.get('X-Sentry-Rate-Limits'),
-              'retry-after': response.headers.get('Retry-After'),
-            };
-            this._handleResponse({
-              requestType: sentryRequest.type,
-              response,
-              headers,
-              resolve,
-              reject,
-            });
-          })
-          .catch(reject);
-      }),
-    );
+    try {
+      // Note: We do not need to suppress tracing here, because we are using the native fetch, instead of our wrapped one.
+      const response = await nativeFetch(options.url, requestOptions);
+
+      return {
+        statusCode: response.status,
+        headers: {
+          'x-sentry-rate-limits': response.headers.get('X-Sentry-Rate-Limits'),
+          'retry-after': response.headers.get('Retry-After'),
+        },
+      };
+    } catch (e) {
+      clearCachedImplementation('fetch');
+      throw e;
+    } finally {
+      pendingBodySize -= requestSize;
+      pendingCount--;
+    }
   }
+
+  return createTransport(
+    options,
+    makeRequest,
+    makePromiseBuffer(options.bufferSize || DEFAULT_BROWSER_TRANSPORT_BUFFER_SIZE),
+  );
 }

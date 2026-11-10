@@ -1,34 +1,34 @@
 <p align="center">
-  <a href="https://sentry.io" target="_blank" align="center">
-    <img src="https://sentry-brand.storage.googleapis.com/sentry-logo-black.png" width="280">
+  <a href="https://sentry.io/?utm_source=github&utm_medium=logo" target="_blank">
+    <picture>
+      <source srcset="https://sentry-brand.storage.googleapis.com/sentry-logo-white.png" media="(prefers-color-scheme: dark)" />
+      <source srcset="https://sentry-brand.storage.googleapis.com/sentry-wordmark-dark-280x84.png" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)" />
+      <img src="https://sentry-brand.storage.googleapis.com/sentry-wordmark-dark-280x84.png" alt="Sentry" width="280">
+    </picture>
   </a>
-  <br />
 </p>
 
 # Official Sentry SDK eslint config
 
-[![npm version](https://img.shields.io/npm/v/@sentry-internal/eslint-config-sdk.svg)](https://www.npmjs.com/package/@sentry-internal/eslint-config-sdk)
-[![npm dm](https://img.shields.io/npm/dm/@sentry-internal/eslint-config-sdk.svg)](https://www.npmjs.com/package/@sentry-internal/eslint-config-sdk)
-[![npm dt](https://img.shields.io/npm/dt/@sentry-internal/eslint-config-sdk.svg)](https://www.npmjs.com/package/@sentry-internal/eslint-config-sdk)
-[![typedoc](https://img.shields.io/badge/docs-typedoc-blue.svg)](http://getsentry.github.io/sentry-javascript/)
+[![npm version](https://img.shields.io/npm/v/@sentry/eslint-config-sdk.svg)](https://www.npmjs.com/package/@sentry/eslint-config-sdk)
+[![npm dm](https://img.shields.io/npm/dm/@sentry/eslint-config-sdk.svg)](https://www.npmjs.com/package/@sentry/eslint-config-sdk)
+[![npm dt](https://img.shields.io/npm/dt/@sentry/eslint-config-sdk.svg)](https://www.npmjs.com/package/@sentry/eslint-config-sdk)
 
-## Links
+Shared ESLint configuration used at Sentry.
 
-- [Official SDK Docs](https://docs.sentry.io/quickstart/)
-- [TypeDoc](http://getsentry.github.io/sentry-javascript/)
-
-## General
-
-Install with `yarn add -D @sentry-internal/eslint-config-sdk`
+> [!NOTE]
+> This package is an internal library published for use by Sentry-owned JavaScript SDK packages and repositories. It is
+> not part of the public API contract and may change in any release. Do not rely on SemVer compatibility if you depend on
+> it directly.
 
 ## Configuration
 
-Use `@sentry-internal` for base rules. Make sure to specify your tsconfig under `parserOptions.project` so that you can
+Use `@sentry` for base rules. Make sure to specify your tsconfig under `parserOptions.project` so that you can
 correctly use the typescript rules. This configuration comes with
 
 ```json
 {
-  "extends": ["@sentry-internal/sdk"],
+  "extends": ["@sentry/sdk"],
   "overrides": [
     {
       "files": ["*.ts", "*.tsx", "*.d.ts"],
@@ -39,3 +39,8 @@ correctly use the typescript rules. This configuration comes with
   ]
 }
 ```
+
+## Support
+
+- [Report a bug](https://github.com/getsentry/sentry-javascript/issues/new/choose)
+- [Contributing](https://github.com/getsentry/sentry-javascript/blob/develop/CONTRIBUTING.md)

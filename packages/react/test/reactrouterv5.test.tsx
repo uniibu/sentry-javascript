@@ -1,55 +1,114 @@
+/**
+ * @vitest-environment jsdom
+ */
+import { createTransport, getCurrentScope, setCurrentClient } from '@sentry/core';
 import { render } from '@testing-library/react';
 import { createMemoryHistory } from 'history-4';
 import * as React from 'react';
+import { act } from 'react';
 import { matchPath, Route, Router, Switch } from 'react-router-5';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { SENTRY_SEGMENT_NAME_SOURCE, URL_TEMPLATE, SENTRY_OP, SENTRY_ORIGIN } from '@sentry/conventions/attributes';
+import { BrowserClient, reactRouterV5BrowserTracingIntegration, withSentryRouting } from '../src';
+import type { RouteConfig } from '../src/reactrouter';
 
-import { reactRouterV5Instrumentation, withSentryRouting } from '../src';
-import { RouteConfig } from '../src/reactrouter';
+const mockStartBrowserTracingPageLoadSpan = vi.fn();
+const mockStartBrowserTracingNavigationSpan = vi.fn();
 
-describe('React Router v5', () => {
-  function createInstrumentation(_opts?: {
-    startTransactionOnPageLoad?: boolean;
-    startTransactionOnLocationChange?: boolean;
-    routes?: RouteConfig[];
-  }): [jest.Mock, any, { mockSetName: jest.Mock; mockFinish: jest.Mock }] {
-    const options = {
-      matchPath: _opts && _opts.routes !== undefined ? matchPath : undefined,
-      routes: undefined,
-      startTransactionOnLocationChange: true,
-      startTransactionOnPageLoad: true,
-      ..._opts,
-    };
-    const history = createMemoryHistory();
-    const mockFinish = jest.fn();
-    const mockSetName = jest.fn();
-    const mockStartTransaction = jest.fn().mockReturnValue({ setName: mockSetName, finish: mockFinish });
-    reactRouterV5Instrumentation(history, options.routes, options.matchPath)(
-      mockStartTransaction,
-      options.startTransactionOnPageLoad,
-      options.startTransactionOnLocationChange,
-    );
-    return [mockStartTransaction, history, { mockSetName, mockFinish }];
+const mockRootSpan = {
+  updateName: vi.fn(),
+  setAttribute: vi.fn(),
+  setAttributes: vi.fn(),
+  getSpanJSON() {
+    return { attributes: { 'sentry.op': 'pageload' } };
+  },
+  getStaticSpanJSON() {
+    return { op: 'pageload' };
+  },
+};
+
+vi.mock('@sentry/browser', async requireActual => {
+  const actual = (await requireActual()) as any;
+  return {
+    ...actual,
+    startBrowserTracingNavigationSpan: (...args: unknown[]) => {
+      mockStartBrowserTracingNavigationSpan(...args);
+      return actual.startBrowserTracingNavigationSpan(...args);
+    },
+    startBrowserTracingPageLoadSpan: (...args: unknown[]) => {
+      mockStartBrowserTracingPageLoadSpan(...args);
+      return actual.startBrowserTracingPageLoadSpan(...args);
+    },
+  };
+});
+
+vi.mock('@sentry/core', async requireActual => {
+  return {
+    ...(await requireActual()),
+    getRootSpan: () => {
+      return mockRootSpan;
+    },
+  };
+});
+
+describe('browserTracingReactRouterV5', () => {
+  function createMockBrowserClient(): BrowserClient {
+    return new BrowserClient({
+      integrations: [],
+      tracesSampleRate: 1,
+      transport: () => createTransport({ recordDroppedEvent: () => undefined }, _ => Promise.resolve({})),
+      stackParser: () => [],
+    });
   }
 
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getCurrentScope().setClient(undefined);
+  });
+
   it('starts a pageload transaction when instrumentation is started', () => {
-    const [mockStartTransaction] = createInstrumentation();
-    expect(mockStartTransaction).toHaveBeenCalledTimes(1);
-    expect(mockStartTransaction).toHaveBeenLastCalledWith({
-      name: '/',
-      op: 'pageload',
-      tags: { 'routing.instrumentation': 'react-router-v5' },
+    const client = createMockBrowserClient();
+    setCurrentClient(client);
+
+    const history = createMemoryHistory();
+    client.addIntegration(reactRouterV5BrowserTracingIntegration({ history }));
+
+    client.init();
+
+    expect(mockStartBrowserTracingPageLoadSpan).toHaveBeenCalledTimes(1);
+    expect(mockStartBrowserTracingPageLoadSpan).toHaveBeenLastCalledWith(expect.any(BrowserClient), {
+      name: 'Pageload',
+      attributes: {
+        [SENTRY_SEGMENT_NAME_SOURCE]: 'url',
+        [SENTRY_ORIGIN]: 'auto.pageload.react.reactrouter_v5',
+        [SENTRY_OP]: 'pageload',
+      },
     });
   });
 
-  it('does not start pageload transaction if option is false', () => {
-    const [mockStartTransaction] = createInstrumentation({ startTransactionOnPageLoad: false });
-    expect(mockStartTransaction).toHaveBeenCalledTimes(0);
+  it("updates the scope's `transactionName` on pageload", () => {
+    const client = createMockBrowserClient();
+    setCurrentClient(client);
+
+    const history = createMemoryHistory();
+    client.addIntegration(reactRouterV5BrowserTracingIntegration({ history }));
+
+    client.init();
+
+    expect(getCurrentScope().getScopeData().transactionName).toEqual('/');
   });
 
   it('starts a navigation transaction', () => {
-    const [mockStartTransaction, history] = createInstrumentation();
+    const client = createMockBrowserClient();
+    setCurrentClient(client);
+
+    const history = createMemoryHistory();
+    client.addIntegration(reactRouterV5BrowserTracingIntegration({ history }));
+
+    client.init();
+
     render(
-      <Router history={history}>
+      <Router history={history as any}>
         <Switch>
           <Route path="/features" component={() => <div>Features</div>} />
           <Route path="/about" component={() => <div>About</div>} />
@@ -58,41 +117,44 @@ describe('React Router v5', () => {
       </Router>,
     );
 
-    history.push('/about');
-    expect(mockStartTransaction).toHaveBeenCalledTimes(2);
-    expect(mockStartTransaction).toHaveBeenLastCalledWith({
-      name: '/about',
-      op: 'navigation',
-      tags: { 'routing.instrumentation': 'react-router-v5' },
+    act(() => {
+      history.push('/about');
+    });
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenCalledTimes(1);
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenLastCalledWith(expect.any(BrowserClient), {
+      name: 'Navigation',
+      attributes: {
+        [SENTRY_SEGMENT_NAME_SOURCE]: 'url',
+        [SENTRY_ORIGIN]: 'auto.navigation.react.reactrouter_v5',
+        [SENTRY_OP]: 'navigation',
+      },
     });
 
-    history.push('/features');
-    expect(mockStartTransaction).toHaveBeenCalledTimes(3);
-    expect(mockStartTransaction).toHaveBeenLastCalledWith({
-      name: '/features',
-      op: 'navigation',
-      tags: { 'routing.instrumentation': 'react-router-v5' },
+    act(() => {
+      history.push('/features');
     });
-  });
-
-  it('does not start a transaction if option is false', () => {
-    const [mockStartTransaction, history] = createInstrumentation({ startTransactionOnLocationChange: false });
-    render(
-      <Router history={history}>
-        <Switch>
-          <Route path="/features" component={() => <div>Features</div>} />
-          <Route path="/about" component={() => <div>About</div>} />
-          <Route path="/" component={() => <div>Home</div>} />
-        </Switch>
-      </Router>,
-    );
-    expect(mockStartTransaction).toHaveBeenCalledTimes(1);
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenCalledTimes(2);
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenLastCalledWith(expect.any(BrowserClient), {
+      name: 'Navigation',
+      attributes: {
+        [SENTRY_SEGMENT_NAME_SOURCE]: 'url',
+        [SENTRY_ORIGIN]: 'auto.navigation.react.reactrouter_v5',
+        [SENTRY_OP]: 'navigation',
+      },
+    });
   });
 
   it('only starts a navigation transaction on push', () => {
-    const [mockStartTransaction, history] = createInstrumentation();
+    const client = createMockBrowserClient();
+    setCurrentClient(client);
+
+    const history = createMemoryHistory();
+    client.addIntegration(reactRouterV5BrowserTracingIntegration({ history }));
+
+    client.init();
+
     render(
-      <Router history={history}>
+      <Router history={history as any}>
         <Switch>
           <Route path="/features" component={() => <div>Features</div>} />
           <Route path="/about" component={() => <div>About</div>} />
@@ -101,32 +163,22 @@ describe('React Router v5', () => {
       </Router>,
     );
 
-    history.replace('hello');
-    expect(mockStartTransaction).toHaveBeenCalledTimes(1);
-  });
-
-  it('finishes a transaction on navigation', () => {
-    const [mockStartTransaction, history, { mockFinish }] = createInstrumentation();
-    render(
-      <Router history={history}>
-        <Switch>
-          <Route path="/features" component={() => <div>Features</div>} />
-          <Route path="/about" component={() => <div>About</div>} />
-          <Route path="/" component={() => <div>Home</div>} />
-        </Switch>
-      </Router>,
-    );
-    expect(mockStartTransaction).toHaveBeenCalledTimes(1);
-
-    history.push('/features');
-    expect(mockFinish).toHaveBeenCalledTimes(1);
-    expect(mockStartTransaction).toHaveBeenCalledTimes(2);
+    act(() => {
+      history.replace('hello');
+    });
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenCalledTimes(0);
   });
 
   it('does not normalize transaction name ', () => {
-    const [mockStartTransaction, history] = createInstrumentation();
-    const { container } = render(
-      <Router history={history}>
+    const client = createMockBrowserClient();
+
+    const history = createMemoryHistory();
+    client.addIntegration(reactRouterV5BrowserTracingIntegration({ history }));
+
+    client.init();
+
+    const { getByText } = render(
+      <Router history={history as any}>
         <Switch>
           <Route path="/users/:userid" component={() => <div>UserId</div>} />
           <Route path="/users" component={() => <div>Users</div>} />
@@ -135,22 +187,35 @@ describe('React Router v5', () => {
       </Router>,
     );
 
-    history.push('/users/123');
-    expect(container.innerHTML).toContain('UserId');
+    act(() => {
+      history.push('/users/123');
+    });
+    getByText('UserId');
 
-    expect(mockStartTransaction).toHaveBeenCalledTimes(2);
-    expect(mockStartTransaction).toHaveBeenLastCalledWith({
-      name: '/users/123',
-      op: 'navigation',
-      tags: { 'routing.instrumentation': 'react-router-v5' },
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenCalledTimes(1);
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenLastCalledWith(expect.any(BrowserClient), {
+      name: 'Navigation',
+      attributes: {
+        [SENTRY_SEGMENT_NAME_SOURCE]: 'url',
+        [SENTRY_ORIGIN]: 'auto.navigation.react.reactrouter_v5',
+        [SENTRY_OP]: 'navigation',
+      },
     });
   });
 
   it('normalizes transaction name with custom Route', () => {
-    const [mockStartTransaction, history, { mockSetName }] = createInstrumentation();
+    const client = createMockBrowserClient();
+    setCurrentClient(client);
+
+    const history = createMemoryHistory();
+    client.addIntegration(reactRouterV5BrowserTracingIntegration({ history }));
+
+    client.init();
+
     const SentryRoute = withSentryRouting(Route);
-    const { container } = render(
-      <Router history={history}>
+
+    const { getByText } = render(
+      <Router history={history as any}>
         <Switch>
           <SentryRoute path="/users/:userid" component={() => <div>UserId</div>} />
           <SentryRoute path="/users" component={() => <div>Users</div>} />
@@ -159,24 +224,43 @@ describe('React Router v5', () => {
       </Router>,
     );
 
-    history.push('/users/123');
-    expect(container.innerHTML).toContain('UserId');
-
-    expect(mockStartTransaction).toHaveBeenCalledTimes(2);
-    expect(mockStartTransaction).toHaveBeenLastCalledWith({
-      name: '/users/123',
-      op: 'navigation',
-      tags: { 'routing.instrumentation': 'react-router-v5' },
+    act(() => {
+      history.push('/users/123');
     });
-    expect(mockSetName).toHaveBeenCalledTimes(2);
-    expect(mockSetName).toHaveBeenLastCalledWith('/users/:userid');
+    getByText('UserId');
+
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenCalledTimes(1);
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenLastCalledWith(expect.any(BrowserClient), {
+      name: 'Navigation',
+      attributes: {
+        [SENTRY_SEGMENT_NAME_SOURCE]: 'url',
+        [SENTRY_ORIGIN]: 'auto.navigation.react.reactrouter_v5',
+        [SENTRY_OP]: 'navigation',
+      },
+    });
+    expect(mockRootSpan.updateName).toHaveBeenCalledTimes(2);
+    expect(mockRootSpan.updateName).toHaveBeenLastCalledWith('/users/:userid');
+    expect(mockRootSpan.setAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        [SENTRY_SEGMENT_NAME_SOURCE]: 'route',
+        [URL_TEMPLATE]: '/users/:userid',
+      }),
+    );
   });
 
   it('normalizes nested transaction names with custom Route', () => {
-    const [mockStartTransaction, history, { mockSetName }] = createInstrumentation();
+    const client = createMockBrowserClient();
+    setCurrentClient(client);
+
+    const history = createMemoryHistory();
+    client.addIntegration(reactRouterV5BrowserTracingIntegration({ history }));
+
+    client.init();
+
     const SentryRoute = withSentryRouting(Route);
-    const { container } = render(
-      <Router history={history}>
+
+    const { getByText } = render(
+      <Router history={history as any}>
         <Switch>
           <SentryRoute path="/organizations/:orgid/v1/:teamid" component={() => <div>Team</div>} />
           <SentryRoute path="/organizations/:orgid" component={() => <div>OrgId</div>} />
@@ -185,29 +269,51 @@ describe('React Router v5', () => {
       </Router>,
     );
 
-    history.push('/organizations/1234/v1/758');
-    expect(container.innerHTML).toContain('Team');
-
-    expect(mockStartTransaction).toHaveBeenCalledTimes(2);
-    expect(mockStartTransaction).toHaveBeenLastCalledWith({
-      name: '/organizations/1234/v1/758',
-      op: 'navigation',
-      tags: { 'routing.instrumentation': 'react-router-v5' },
+    act(() => {
+      history.push('/organizations/1234/v1/758');
     });
-    expect(mockSetName).toHaveBeenCalledTimes(2);
-    expect(mockSetName).toHaveBeenLastCalledWith('/organizations/:orgid/v1/:teamid');
+    getByText('Team');
 
-    history.push('/organizations/543');
-    expect(container.innerHTML).toContain('OrgId');
-
-    expect(mockStartTransaction).toHaveBeenCalledTimes(3);
-    expect(mockStartTransaction).toHaveBeenLastCalledWith({
-      name: '/organizations/543',
-      op: 'navigation',
-      tags: { 'routing.instrumentation': 'react-router-v5' },
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenCalledTimes(1);
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenLastCalledWith(expect.any(BrowserClient), {
+      name: 'Navigation',
+      attributes: {
+        [SENTRY_SEGMENT_NAME_SOURCE]: 'url',
+        [SENTRY_ORIGIN]: 'auto.navigation.react.reactrouter_v5',
+        [SENTRY_OP]: 'navigation',
+      },
     });
-    expect(mockSetName).toHaveBeenCalledTimes(3);
-    expect(mockSetName).toHaveBeenLastCalledWith('/organizations/:orgid');
+    expect(mockRootSpan.updateName).toHaveBeenCalledTimes(2);
+    expect(mockRootSpan.updateName).toHaveBeenLastCalledWith('/organizations/:orgid/v1/:teamid');
+    expect(mockRootSpan.setAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        [SENTRY_SEGMENT_NAME_SOURCE]: 'route',
+        [URL_TEMPLATE]: '/organizations/:orgid/v1/:teamid',
+      }),
+    );
+
+    act(() => {
+      history.push('/organizations/543');
+    });
+    getByText('OrgId');
+
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenCalledTimes(2);
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenLastCalledWith(expect.any(BrowserClient), {
+      name: 'Navigation',
+      attributes: {
+        [SENTRY_SEGMENT_NAME_SOURCE]: 'url',
+        [SENTRY_ORIGIN]: 'auto.navigation.react.reactrouter_v5',
+        [SENTRY_OP]: 'navigation',
+      },
+    });
+    expect(mockRootSpan.updateName).toHaveBeenCalledTimes(3);
+    expect(mockRootSpan.updateName).toHaveBeenLastCalledWith('/organizations/:orgid');
+    expect(mockRootSpan.setAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        [SENTRY_SEGMENT_NAME_SOURCE]: 'route',
+        [URL_TEMPLATE]: '/organizations/:orgid',
+      }),
+    );
   });
 
   it('matches with route object', () => {
@@ -218,9 +324,16 @@ describe('React Router v5', () => {
       { path: '/organizations/:orgid' },
       { path: '/' },
     ];
-    const [mockStartTransaction, history] = createInstrumentation({ routes });
+    const client = createMockBrowserClient();
+    setCurrentClient(client);
+
+    const history = createMemoryHistory();
+    client.addIntegration(reactRouterV5BrowserTracingIntegration({ history, routes, matchPath }));
+
+    client.init();
+
     render(
-      <Router history={history}>
+      <Router history={history as any}>
         <Switch>
           <Route path="/organizations/:orgid/v1/:teamid" component={() => <div>Team</div>} />
           <Route path="/organizations/:orgid" component={() => <div>OrgId</div>} />
@@ -229,20 +342,73 @@ describe('React Router v5', () => {
       </Router>,
     );
 
-    history.push('/organizations/1234/v1/758');
-    expect(mockStartTransaction).toHaveBeenCalledTimes(2);
-    expect(mockStartTransaction).toHaveBeenLastCalledWith({
+    act(() => {
+      history.push('/organizations/1234/v1/758');
+    });
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenCalledTimes(1);
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenLastCalledWith(expect.any(BrowserClient), {
       name: '/organizations/:orgid/v1/:teamid',
-      op: 'navigation',
-      tags: { 'routing.instrumentation': 'react-router-v5' },
+      attributes: {
+        [SENTRY_SEGMENT_NAME_SOURCE]: 'route',
+        [SENTRY_ORIGIN]: 'auto.navigation.react.reactrouter_v5',
+        [SENTRY_OP]: 'navigation',
+        [URL_TEMPLATE]: '/organizations/:orgid/v1/:teamid',
+      },
     });
 
-    history.push('/organizations/1234');
-    expect(mockStartTransaction).toHaveBeenCalledTimes(3);
-    expect(mockStartTransaction).toHaveBeenLastCalledWith({
-      name: '/organizations/:orgid',
-      op: 'navigation',
-      tags: { 'routing.instrumentation': 'react-router-v5' },
+    act(() => {
+      history.push('/organizations/1234');
     });
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenCalledTimes(2);
+    expect(mockStartBrowserTracingNavigationSpan).toHaveBeenLastCalledWith(expect.any(BrowserClient), {
+      name: '/organizations/:orgid',
+      attributes: {
+        [SENTRY_SEGMENT_NAME_SOURCE]: 'route',
+        [SENTRY_ORIGIN]: 'auto.navigation.react.reactrouter_v5',
+        [SENTRY_OP]: 'navigation',
+        [URL_TEMPLATE]: '/organizations/:orgid',
+      },
+    });
+  });
+
+  it("updates the scope's `transactionName` on a route change", () => {
+    const routes: RouteConfig[] = [
+      {
+        path: '/organizations/:orgid/v1/:teamid',
+      },
+      { path: '/organizations/:orgid' },
+      { path: '/' },
+    ];
+    const client = createMockBrowserClient();
+    setCurrentClient(client);
+
+    const history = createMemoryHistory();
+    client.addIntegration(reactRouterV5BrowserTracingIntegration({ history, routes, matchPath }));
+
+    client.init();
+
+    const SentryRoute = withSentryRouting(Route);
+
+    render(
+      <Router history={history as any}>
+        <Switch>
+          <SentryRoute path="/organizations/:orgid/v1/:teamid" component={() => <div>Team</div>} />
+          <SentryRoute path="/organizations/:orgid" component={() => <div>OrgId</div>} />
+          <SentryRoute path="/" component={() => <div>Home</div>} />
+        </Switch>
+      </Router>,
+    );
+
+    act(() => {
+      history.push('/organizations/1234/v1/758');
+    });
+
+    expect(getCurrentScope().getScopeData().transactionName).toBe('/organizations/:orgid/v1/:teamid');
+
+    act(() => {
+      history.push('/organizations/1234');
+    });
+
+    expect(getCurrentScope().getScopeData().transactionName).toBe('/organizations/:orgid');
   });
 });
